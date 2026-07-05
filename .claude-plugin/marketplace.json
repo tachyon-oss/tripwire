@@ -1,0 +1,14 @@
+{
+  "name": "tripwire",
+  "description": "Tripwire — managed canaries for coding agents.",
+  "owner": { "name": "Tripwire" },
+  "plugins": [
+    {
+      "name": "tripwire",
+      "source": "./tripwire",
+      "description": "Plant decoy credentials where attackers look. Get one alert when one is used.",
+      "homepage": "https://tripwire.so",
+      "keywords": ["security", "canary", "honeytoken", "detection"]
+    }
+  ]
+}

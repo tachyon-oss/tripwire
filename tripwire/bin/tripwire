@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Tripwire plugin CLI shim.
+#
+# Runs the bundled tripwire client via `uvx`. The first invocation resolves
+# an isolated environment (the cold run fetches the runtime deps and build
+# backend); uvx reuses it thereafter.
+#
+# When the CLI is published to PyPI this collapses to:
+#   exec uvx tripwire-cli "$@"
+set -euo pipefail
+
+# CLAUDE_PLUGIN_ROOT is exported by Claude Code at runtime. Outside the
+# plugin host (local testing) fall back to this script's location:
+# bin/ sits at the plugin root, so the source is ../skills/tripwire_cli.
+plugin_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Bridge the plugin's `userConfig.server` (exported by the host as
+# CLAUDE_PLUGIN_OPTION_SERVER) into the CLI's TRIPWIRE_SERVER override.
+# Empty/unset means the CLI uses its production default.
+if [[ -z "${TRIPWIRE_SERVER:-}" && -n "${CLAUDE_PLUGIN_OPTION_SERVER:-}" ]]; then
+  export TRIPWIRE_SERVER="${CLAUDE_PLUGIN_OPTION_SERVER}"
+fi
+
+exec uvx --from "${plugin_root}/skills/tripwire_cli" tripwire "$@"

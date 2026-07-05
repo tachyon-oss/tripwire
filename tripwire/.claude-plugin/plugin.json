@@ -1,0 +1,16 @@
+{
+  "name": "tripwire",
+  "version": "0.1.0",
+  "description": "Plant decoy credentials where attackers look. Get one alert when one is used.",
+  "author": { "name": "Tripwire" },
+  "homepage": "https://tripwire.so",
+  "keywords": ["security", "canary", "honeytoken", "detection"],
+  "userConfig": {
+    "server": {
+      "type": "string",
+      "title": "Tripwire API server",
+      "description": "Tripwire API base URL. Self-hosting only; consumed at `tripwire login` (set before logging in). Leave blank for the Tripwire API.",
+      "default": ""
+    }
+  }
+}
