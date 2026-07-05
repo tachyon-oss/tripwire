@@ -21,4 +21,11 @@ if [[ -z "${TRIPWIRE_SERVER:-}" && -n "${CLAUDE_PLUGIN_OPTION_SERVER:-}" ]]; the
   export TRIPWIRE_SERVER="${CLAUDE_PLUGIN_OPTION_SERVER}"
 fi
 
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "tripwire: this plugin runs its CLI via 'uv' (uvx), which isn't installed." >&2
+  echo "  install uv:  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  echo "  then reopen your shell and retry." >&2
+  exit 127
+fi
+
 exec uvx --from "${plugin_root}/skills/tripwire_cli" tripwire "$@"
