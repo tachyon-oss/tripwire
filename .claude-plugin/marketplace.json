@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "tripwire",
-      "source": "./tripwire",
+      "source": "./plugins/claude-code",
       "description": "Plant decoy credentials where attackers look. Get one alert when one is used.",
       "homepage": "https://tripwire.so",
       "keywords": ["security", "canary", "honeytoken", "detection"]

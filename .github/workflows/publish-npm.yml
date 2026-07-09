@@ -1,0 +1,38 @@
+name: Publish @tachyonhq/tripwire
+
+# Publishes the Node CLI (cli/node) to npm.
+#
+# Triggers on either a published GitHub Release or a pushed tag of the form
+# `cli-node-v*` (e.g. cli-node-v0.1.0). The package sets
+# publishConfig.access = "public", so a plain `npm publish` publishes the
+# scoped package publicly.
+#
+# Required repo secret: NPM_TOKEN — an npm automation token with publish
+# rights on the @tachyonhq scope.
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "cli-node-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli/node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: cli/node/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
