@@ -7,7 +7,6 @@
  * (never `/auth/me`) and prints the identity line — the same first line `status`
  * prints.
  */
-import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 
 import type { ApiClient } from "../api/client.js";
@@ -20,15 +19,11 @@ import type { Session } from "../util/session.js";
 
 const EMAIL_CODE_ATTEMPTS = 3;
 
-/** Best-effort default email from `git config user.email`, else `null`. */
-function gitUserEmail(): string | null {
+/** The email from a prior login (the local cache) as the prompt default, else
+ *  null. Never derived from git or any other local identity. */
+function cachedLoginEmail(session: Session): string | null {
   try {
-    const email = execFileSync("git", ["config", "user.email"], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 5000,
-    }).trim();
-    return email || null;
+    return session.load().email ?? null;
   } catch {
     return null;
   }
@@ -52,17 +47,18 @@ export interface LoginOptions {
 export async function runLogin(session: Session, opts: LoginOptions): Promise<void> {
   const server = session.loginServer();
   const client = session.client(server);
-  const creds = await emailLogin(client, server, opts.email);
-  const path = session.store.save(creds);
-  out(`logged in as ${creds.user_id}; token cached at ${path}`);
+  const creds = await emailLogin(client, server, opts.email, cachedLoginEmail(session));
+  session.store.save(creds);
+  out(`logged in as ${creds.user_id}`);
 }
 
 async function emailLogin(
   client: ApiClient,
   server: string,
-  emailFlag?: string,
+  emailFlag: string | undefined,
+  defaultEmail: string | null,
 ): Promise<Credentials> {
-  const email = emailFlag || (await prompt("email", gitUserEmail()));
+  const email = emailFlag || (await prompt("email", defaultEmail));
   if (!email) throw new CliError("an email address is required to log in.");
 
   await startEmailLogin(client, email);

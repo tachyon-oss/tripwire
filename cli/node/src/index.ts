@@ -24,6 +24,8 @@ import {
 import { runDelete, runDisarm, runList, runShow, runTypes } from "./commands/canary.js";
 import { runCreate } from "./commands/create.js";
 import { runStatus } from "./commands/status.js";
+import { PLACEMENTS } from "./placements/index.js";
+import { customerTypes } from "./types/registry.js";
 import { action } from "./util/errors.js";
 import { Session } from "./util/session.js";
 
@@ -39,6 +41,11 @@ function readVersion(): string {
   }
 }
 
+/** Comma-separated creatable ids (customer types + placements), for `create` help. */
+function creatableTypeList(): string {
+  return [...customerTypes().map((e) => e.id), ...PLACEMENTS.map((p) => p.id)].join(", ");
+}
+
 export function buildProgram(session: Session): Command {
   const program = new Command();
   program
@@ -51,7 +58,7 @@ export function buildProgram(session: Session): Command {
   program
     .command("login")
     .description("log in with an emailed sign-in code and cache a token")
-    .option("--email <addr>", "email to sign in with (defaults to git config user.email)")
+    .option("--email <addr>", "email address to sign in with")
     .action(action(async (opts: { email?: string }) => runLogin(session, opts)));
 
   program
@@ -82,13 +89,12 @@ export function buildProgram(session: Session): Command {
 
   canary
     .command("create")
-    .argument("[type]", "canary type or placement id (see: tripwire canary types)")
-    .description("create a canary; its credential is revealed once, now")
-    .option("--name <name>", "label for a placement block (OPSEC-checked)")
-    .option("--note <note>", "free-form note stored on the canary (never rendered)")
-    .option("--in <parent>", "create under a parent canary (not yet supported)")
+    .argument("[type]", `canary type, one of: ${creatableTypeList()}`)
+    .description("create a canary; the credential is shown once, at creation")
+    .option("--name <name>", "name for the placement block (e.g. the AWS profile name)")
+    .option("--note <note>", "your own note to remember where you placed it")
     .option("--expires <when>", "expiry timestamp (ISO 8601)")
-    .option("-o, --output <file>", "write the credential/block to a file")
+    .option("-o, --output <file>", "write the credential to a file instead of stdout")
     .action(
       action(
         async (
@@ -96,7 +102,6 @@ export function buildProgram(session: Session): Command {
           opts: {
             name?: string;
             note?: string;
-            in?: string;
             expires?: string;
             output?: string;
           },
@@ -105,7 +110,6 @@ export function buildProgram(session: Session): Command {
             type,
             name: opts.name,
             note: opts.note,
-            in: opts.in,
             expires: opts.expires,
             output: opts.output,
           }),
@@ -117,10 +121,9 @@ export function buildProgram(session: Session): Command {
     .description("list your canaries")
     .option("--type <type>", "filter by type")
     .option("--fired", "only canaries that have fired")
-    .option("--in <parent>", "filter by parent canary (not yet supported)")
     .option("--json", "emit verbatim server JSON")
     .action(
-      action(async (opts: { type?: string; fired?: boolean; in?: string; json?: boolean }) =>
+      action(async (opts: { type?: string; fired?: boolean; json?: boolean }) =>
         runList(session, opts),
       ),
     );

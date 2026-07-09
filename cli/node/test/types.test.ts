@@ -22,17 +22,19 @@ describe("canary types catalog", () => {
     expect(stdout).toContain("aws.access_key");
     expect(stdout).toContain("aws.profile");
     expect(stdout).toContain("aws.credentials");
-    // Placement BACKING cell carries the underlying + target file.
-    expect(stdout).toContain("aws.access_key → ~/.aws/config");
-    expect(stdout).toContain("aws.access_key → ~/.aws/credentials");
+    // Placement row shows its plain description + the target file.
+    expect(stdout).toContain("rendered into ~/.aws/config");
+    expect(stdout).toContain("rendered into ~/.aws/credentials");
   });
 
-  it("includes a VERBS column with the lifecycle verbs", () => {
+  it("shows a plain description and hides internal columns (backing/fires-via/verbs)", () => {
     runTypes(undefined, {});
-    expect(stdout).toContain("VERBS");
-    expect(stdout).toContain("disarm delete");
-    expect(stdout).not.toContain("arm disarm");
-    expect(stdout).not.toContain("rotate");
+    expect(stdout).toContain("WHAT IT IS");
+    expect(stdout).toContain("AWS access key");
+    expect(stdout).not.toContain("VERBS");
+    expect(stdout).not.toContain("BACKING");
+    expect(stdout).not.toContain("FIRES VIA");
+    expect(stdout).not.toContain("CloudTrail");
   });
 
   it("shows github.token but keeps unreleased/operator types out of the catalog", () => {
@@ -63,9 +65,10 @@ describe("canary types --json", () => {
       underlying: "aws.access_key",
       target_hint: "~/.aws/credentials",
     });
-    // Placement backing is the underlying's real backing (not the display arrow).
-    expect(profile?.["backing"]).toBe("real IAM key");
-    expect(profile?.["verbs"]).toEqual(["disarm", "delete"]);
+    // --json carries a plain summary, not internal backing/fires-via/verbs.
+    expect(profile?.["summary"]).toContain("AWS access key");
+    expect(profile).not.toHaveProperty("backing");
+    expect(profile).not.toHaveProperty("verbs");
     // Aliases are no longer a concept in the catalog output.
     expect(raw).not.toHaveProperty("aliases");
     expect(profile).not.toHaveProperty("aliases");
@@ -76,10 +79,9 @@ describe("canary types <placement> explain", () => {
   it("explains aws.profile instead of erroring", () => {
     expect(() => runTypes("aws.profile", {})).not.toThrow();
     expect(stdout).toContain("aws.profile");
-    expect(stdout).toContain("CLI sugar over aws.access_key");
-    expect(stdout).toContain("creates:");
-    expect(stdout).toContain("real IAM key");
-    expect(stdout).toContain("renders:");
+    expect(stdout).toContain("AWS access key");
+    expect(stdout).toContain("rendered into ~/.aws/config");
+    expect(stdout).not.toContain("real IAM key");
     expect(stdout).toContain("[profile <name>]");
     expect(stdout).toContain("--name");
     expect(stdout).toContain("-o/--output");

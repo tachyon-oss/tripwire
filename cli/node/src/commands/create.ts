@@ -11,7 +11,7 @@ import { generateName } from "../placements/namegen.js";
 import { assertSafeName } from "../placements/opsec.js";
 import { type PlacementDef, resolvePlacement } from "../placements/index.js";
 import { dottedForWire, resolveType, type TypeEntry } from "../types/registry.js";
-import { CliError, notSupported } from "../util/errors.js";
+import { CliError } from "../util/errors.js";
 import { armedWord } from "../util/format.js";
 import { err, out } from "../util/io.js";
 import type { Session } from "../util/session.js";
@@ -21,25 +21,17 @@ export interface CreateOptions {
   type?: string;
   name?: string;
   note?: string;
-  in?: string;
   expires?: string;
   output?: string;
 }
 
-const CREATING_HINT =
-  "creating the canary (usually a second or two; up to ~2 min if the warm pool is cold).";
+const CREATING_HINT = "creating your canary…";
 
 export async function runCreate(session: Session, opts: CreateOptions): Promise<void> {
   const typeInput = opts.type;
   if (!typeInput) {
     throw new CliError(
-      "a canary type is required. see the available types: `tripwire canary types`",
-    );
-  }
-  if (opts.in) {
-    notSupported(
-      "--in (containment) is not yet supported by the server; canaries cannot be " +
-        "nested under a parent yet.",
+      "a canary type is required. run `tripwire canary create --help` for the list.",
     );
   }
 

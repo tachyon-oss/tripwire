@@ -46,10 +46,12 @@ describe("removed back-compat flags", () => {
     const create = canaryGroup().commands.find((c) => c.name() === "create");
     const longs = create?.options.map((o) => o.long) ?? [];
     expect(longs).not.toContain("--type");
-    // The flags that stay this pass are still present.
+    // The flags that remain are present; the unsupported --in is gone.
     expect(longs).toContain("--name");
-    expect(longs).toContain("--in");
+    expect(longs).toContain("--note");
     expect(longs).toContain("--expires");
+    expect(longs).toContain("--output");
+    expect(longs).not.toContain("--in");
   });
 });
 

@@ -4,7 +4,7 @@
  */
 import { type PlacementDef, PLACEMENTS, resolvePlacement } from "../placements/index.js";
 import { customerTypes, resolveType, tryResolveType, type TypeEntry } from "../types/registry.js";
-import { CliError, notSupported } from "../util/errors.js";
+import { CliError } from "../util/errors.js";
 import { canaryRow, type CanarySummary, hasFired } from "../util/format.js";
 import { out, printJson } from "../util/io.js";
 import type { Session } from "../util/session.js";
@@ -16,17 +16,10 @@ interface ListResponse {
 export interface ListOptions {
   type?: string;
   fired?: boolean;
-  in?: string;
   json?: boolean;
 }
 
 export async function runList(session: Session, opts: ListOptions): Promise<void> {
-  if (opts.in) {
-    notSupported(
-      "--in (containment) is not yet supported by the server; canaries cannot be " +
-        "filtered by parent yet.",
-    );
-  }
   const response = (await session.authedClient().listCanaries()) as ListResponse;
   let canaries = response.canaries ?? [];
 
@@ -85,21 +78,29 @@ export interface TypesOptions {
   json?: boolean;
 }
 
-/**
- * One row of the `types` catalog: a raw type, or a placement nested under its
- * underlying type. Placements carry a `placement` descriptor; raw types do not.
- */
+/** Plain, user-facing one-liner per type (no internal backing/fire details). */
+const TYPE_SUMMARY: Record<string, string> = {
+  "aws.access_key": "AWS access key",
+  "github.token": "GitHub token",
+  "database.credentials": "database login",
+  "web.login": "fake login page + password",
+  "web.cookie": "browser session cookie",
+  "k8s.config": "Kubernetes kubeconfig",
+};
+
+function typeSummary(id: string): string {
+  return TYPE_SUMMARY[id] ?? id;
+}
+
+function placementSummary(p: PlacementDef): string {
+  return `${typeSummary(p.underlyingType)}, rendered into ${p.targetFile}`;
+}
+
+/** One row of the `types` catalog: a raw type, or a placement nested under it. */
 interface CatalogRow {
-  /** Dotted display id (not indented; the renderer adds the indent). */
   id: string;
-  /** True for a placement row (rendered indented under its underlying type). */
   nested: boolean;
-  /** Human BACKING cell: real backing, or `underlying → target` for placements. */
-  backingDisplay: string;
-  /** Structured backing for `--json` (the underlying's real backing). */
-  backingJson: string;
-  firesVia: string;
-  verbs: string[];
+  summary: string;
   wire: string;
   placement?: { underlying: string; target_hint: string };
 }
@@ -108,28 +109,14 @@ interface CatalogRow {
 function catalogRows(): CatalogRow[] {
   const rows: CatalogRow[] = [];
   for (const entry of customerTypes()) {
-    rows.push({
-      id: entry.id,
-      nested: false,
-      backingDisplay: entry.backing,
-      backingJson: entry.backing,
-      firesVia: entry.firesVia,
-      verbs: entry.verbs,
-      wire: entry.wire,
-    });
+    rows.push({ id: entry.id, nested: false, summary: typeSummary(entry.id), wire: entry.wire });
     for (const placement of PLACEMENTS.filter((p) => p.underlyingType === entry.id)) {
       rows.push({
         id: placement.id,
         nested: true,
-        backingDisplay: `${placement.underlyingType} → ${placement.targetFile}`,
-        backingJson: entry.backing,
-        firesVia: entry.firesVia,
-        verbs: entry.verbs,
+        summary: placementSummary(placement),
         wire: entry.wire,
-        placement: {
-          underlying: placement.underlyingType,
-          target_hint: placement.targetFile,
-        },
+        placement: { underlying: placement.underlyingType, target_hint: placement.targetFile },
       });
     }
   }
@@ -146,13 +133,7 @@ export function runTypes(arg: string | undefined, opts: TypesOptions): void {
   if (opts.json) {
     printJson(
       rows.map((r) => {
-        const record: Record<string, unknown> = {
-          id: r.id,
-          wire: r.wire,
-          backing: r.backingJson,
-          fires_via: r.firesVia,
-          verbs: r.verbs,
-        };
+        const record: Record<string, unknown> = { id: r.id, wire: r.wire, summary: r.summary };
         // `placement` is present only on placement rows (absent for raw types).
         if (r.placement) record["placement"] = r.placement;
         return record;
@@ -163,25 +144,17 @@ export function runTypes(arg: string | undefined, opts: TypesOptions): void {
   renderCatalog(rows);
 }
 
-/** Render the aligned human catalog table (dynamic column widths). */
+/** Render the aligned human catalog table: TYPE + a plain description. */
 function renderCatalog(rows: CatalogRow[]): void {
-  const cells = rows.map((r) => ({
-    type: (r.nested ? "  " : "") + r.id,
-    backing: r.backingDisplay,
-    firesVia: r.firesVia,
-    verbs: r.verbs.join(" "),
-  }));
+  const cells = rows.map((r) => ({ type: (r.nested ? "  " : "") + r.id, summary: r.summary }));
   const wType = width("TYPE", cells.map((c) => c.type));
-  const wBacking = width("BACKING", cells.map((c) => c.backing));
-  const wFires = width("FIRES VIA", cells.map((c) => c.firesVia));
-  const line = (a: string, b: string, c: string, d: string): string =>
-    `${a.padEnd(wType)}  ${b.padEnd(wBacking)}  ${c.padEnd(wFires)}  ${d}`;
+  const line = (a: string, b: string): string => `${a.padEnd(wType)}  ${b}`;
 
-  out(line("TYPE", "BACKING", "FIRES VIA", "VERBS"));
-  for (const c of cells) out(line(c.type, c.backing, c.firesVia, c.verbs));
+  out(line("TYPE", "WHAT IT IS"));
+  for (const c of cells) out(line(c.type, c.summary));
   out("");
-  out("indented rows are placements (CLI sugar rendered into a real config file).");
-  out("run `tripwire canary types <type>` for detail.");
+  out("Every canary alerts you the moment its credential is used.");
+  out("Indented types render a ready-to-use config block for the file shown.");
 }
 
 function width(header: string, values: string[]): number {
@@ -205,20 +178,13 @@ function explainType(arg: string, json: boolean): void {
     printJson({
       id: entry.id,
       wire: entry.wire,
-      backing: entry.backing,
-      fires_via: entry.firesVia,
-      verbs: entry.verbs,
-      output_fields: entry.outputFields,
+      summary: typeSummary(entry.id),
+      fields: entry.outputFields,
     });
     return;
   }
   out(entry.id);
-  out(`  backing:   ${entry.backing}`);
-  out(`  fires via: ${entry.firesVia}`);
-  out(`  verbs:     ${entry.verbs.join(", ")}`);
-  if (entry.outputFields.length > 0) {
-    out(`  fields:    ${entry.outputFields.join(", ")}`);
-  }
+  out(`  ${typeSummary(entry.id)}; alerts the moment it is used.`);
   out("");
   out(`create it with: tripwire canary create ${entry.id}`);
 }
@@ -238,22 +204,17 @@ function explainPlacement(placement: PlacementDef, json: boolean): void {
     printJson({
       id: placement.id,
       wire: underlying.wire,
+      summary: placementSummary(placement),
       placement: { underlying: placement.underlyingType, target_hint: placement.targetFile },
-      backing: underlying.backing,
-      fires_via: underlying.firesVia,
-      verbs: underlying.verbs,
       flags,
       example,
     });
     return;
   }
   out(placement.id);
-  out(`  placement: CLI sugar over ${underlying.id}`);
-  out(`  creates:   ${underlying.id} (${underlying.backing}); fires via ${underlying.firesVia}`);
-  out(`  renders:   a block for ${placement.targetFile}:`);
-  for (const blockLine of sampleBlock.split("\n")) out(`               ${blockLine}`);
-  out(`  flags:     ${flags.join(", ")}`);
-  out(`  verbs:     ${underlying.verbs.join(", ")}`);
+  out(`  ${placementSummary(placement)}:`);
+  for (const blockLine of sampleBlock.split("\n")) out(`      ${blockLine}`);
+  out(`  flags: ${flags.join(", ")}`);
   out("");
   out(`example: ${example}`);
 }
