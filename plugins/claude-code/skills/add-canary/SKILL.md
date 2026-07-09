@@ -1,6 +1,6 @@
 ---
 name: add-canary
-description: Use when the user wants to plant, set up, add, or create a Tripwire canary / decoy credential / honeytoken (AWS key, GitHub PAT, Anthropic key, DNS label, web login, browser session cookie, Postgres login, or Kubernetes kubeconfig). The natural-language path to creating a canary.
+description: Use when the user wants to plant, set up, add, or create a Tripwire canary / decoy credential / honeytoken (AWS key, GitHub PAT, web login, browser session cookie, Postgres login, or Kubernetes kubeconfig). The natural-language path to creating a canary.
 allowed-tools: Bash(curl:*), Bash(git:*), Bash(tripwire:*), AskUserQuestion, Write, Read
 ---
 
@@ -50,18 +50,18 @@ Flow:
    `type` and a short `memo`. Create is synchronous and is the one-time
    credential reveal: the response inlines the secret/placement for that type
    (`aws_access_key`: `access_key_id`/`secret_access_key`/`region`; `github_pat`:
-   `raw_token`; `anthropic_api_key`: `raw_key`; `dns_label`: `fqdn`/`qtype`;
-   `web_login_credential`: `url`/`username`/`password`; `browser_session_cookie`:
+   `raw_token`; `web_login_credential`: `url`/`username`/`password`;
+   `browser_session_cookie`:
    `url`/`cookie_name`/`cookie_value`/`cookie_domain`/`cookie_path`;
    `postgres_login`: `database_url`/`host`/`port`/`database`/`username`/`password`/`sslmode`/`url`;
    `kubernetes_kubeconfig`: `kubeconfig` (full YAML) plus
    `server`/`cluster_name`/`user_name`/`bearer_token`/`token`; the server
-   generates every name/host/value, send no zone/name/host flags). For provider
-   types create is usually near-instant (the server claims a pre-warmed
-   credential); use a read timeout of at least 180s as a safety net for a rare
-   cold-pool fallback. For the request-path types (`web_login_credential`,
-   `browser_session_cookie`, `postgres_login`, `kubernetes_kubeconfig`) create is
-   instant and the facade becomes fully live within about 5s, so a brief pause
+   generates every name/host/value, send no name/host flags). For provider
+   types create usually returns in a second or two; use a read timeout of at
+   least 180s as a safety net while it provisions. For the request-path types
+   (`web_login_credential`, `browser_session_cookie`, `postgres_login`,
+   `kubernetes_kubeconfig`) create is instant and the facade becomes fully live
+   within about 5s, so a brief pause
    before you expect it to detect use is enough; it is not a 30-60s wait.
    Capture the secret now; reads never return it again. If create answers
    `canary_pending`, the one-time reveal is gone and unrecoverable: do NOT retry
@@ -87,10 +87,6 @@ Provider-credential types (inert real-looking provider secrets):
   vars. A strong lure even if they do not use AWS.
 - `github_pat` — dotfiles, `.netrc`, CI/CD secrets, a git remote URL, a deploy
   script.
-- `anthropic_api_key` — `.env`, agent/LLM config, a notebook, a shell rc file.
-- `dns_label` — a hostname in a config snippet, an internal service URL, a
-  metrics/telemetry endpoint, an allowlist. Lowest friction (it fires on DNS
-  resolution; nothing secret needs to live in a file beyond the hostname).
 
 Request-path types (Tripwire-hosted facades; each fires when the attacker
 actually uses the credential, not when they merely view it):

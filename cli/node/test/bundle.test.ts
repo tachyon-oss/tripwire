@@ -249,7 +249,7 @@ describe("runBundleDownload — default (extract)", () => {
 });
 
 describe("runBundleDownload — no id (auto-create then download)", () => {
-  it("creates a bundle for the operator, then downloads + extracts it", async () => {
+  it("creates a bundle for you, then downloads + extracts it", async () => {
     muteStderr();
     const { fetchImpl, calls } = routingFetch("b_auto");
     const target = join(dir, "kit");

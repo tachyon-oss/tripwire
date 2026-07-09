@@ -37,7 +37,7 @@ describe("canary types catalog", () => {
     expect(stdout).not.toContain("CloudTrail");
   });
 
-  it("shows github.token but keeps unreleased/operator types out of the catalog", () => {
+  it("shows github.token but keeps unreleased/internal types out of the catalog", () => {
     runTypes(undefined, {});
     expect(stdout).toContain("github.token");
     expect(stdout).not.toContain("anthropic.api_key");
@@ -83,7 +83,6 @@ describe("canary types <placement> explain", () => {
     expect(stdout).toContain("rendered into ~/.aws/config");
     expect(stdout).not.toContain("real IAM key");
     expect(stdout).toContain("[profile <name>]");
-    expect(stdout).toContain("--name");
     expect(stdout).toContain("-o/--output");
     expect(stdout).toContain("tripwire canary create aws.profile >> ~/.aws/config");
   });

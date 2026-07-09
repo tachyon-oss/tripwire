@@ -27,14 +27,14 @@ install. (`uvx` is used under the hood to run it in an isolated environment.)
 - Ask in natural language — "help me plant a canary", "did anything fire?" —
   and the plugin's skills handle it.
 - Power users can also drive the bundled `tripwire` CLI directly:
-  `tripwire canaries list`, `tripwire canaries get <id>`.
+  `tripwire canary list`, `tripwire canary show <id>`.
 
 ## Canary types
 
-Eight types, in two families:
+Six types, in two families:
 
 - Provider credentials, inert real-looking secrets: `aws_access_key`,
-  `github_pat`, `anthropic_api_key`, `dns_label`.
+  `github_pat`.
 - Request-path credentials, served from Tripwire-hosted facades:
   `web_login_credential` (a fake login URL plus username/password),
   `browser_session_cookie` (a planted session cookie), `postgres_login` (a

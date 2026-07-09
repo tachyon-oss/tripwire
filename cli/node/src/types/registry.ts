@@ -1,38 +1,29 @@
 /**
- * Vendored type registry — the single source of type knowledge in the CLI, and
- * the swap-seam for a future server-side `GET /types`.
+ * The type registry — the single source of type knowledge in the CLI.
  *
  * The naming rule: LEFT of the dot = provider/surface namespace; RIGHT of the
- * dot = the artifact you receive. Realness lives in the BACKING field, not the
- * id.
+ * dot = the artifact you receive.
  *
- * WIRE CONTRACT: the wire speaks snake (`POST /canary {"type":"aws_access_key"}`)
- * until a server registry lands. The CLI accepts ONLY the canonical dotted ids
- * as user input and TRANSLATES to the snake `wire` id on the way out; it maps the
- * snake ids the server returns back to dotted for display. `--json` output stays
- * verbatim server truth (snake), so scripts never break.
+ * WIRE CONTRACT: the wire speaks snake (`POST /canary {"type":"aws_access_key"}`).
+ * The CLI accepts ONLY the canonical dotted ids as user input and TRANSLATES to
+ * the snake `wire` id on the way out; it maps the snake ids the server returns
+ * back to dotted for display. `--json` output stays verbatim server truth
+ * (snake), so scripts never break.
  */
 import { CliError } from "../util/errors.js";
 
-export type Visibility = "customer" | "unreleased" | "operator";
+export type Visibility = "customer" | "unreleased" | "internal";
 
 export interface TypeEntry {
   /** Dotted canonical id, e.g. `aws.access_key` — the only accepted input id. */
   id: string;
   /** Snake wire id sent to `POST /canary`, e.g. `aws_access_key`. */
   wire: string;
-  /** How the underlying credential is backed (realness lives here, not in id). */
-  backing: string;
-  /** How a fire is detected. */
-  firesVia: string;
   /**
-   * The output keys the create response inlines for this type, mirroring
-   * `_RESPONSE_BY_TYPE` in `api/v1/canary.py`. Used to render the human create
-   * output; `--json` passes server truth through untouched.
+   * The output keys the create response inlines for this type. Used to render the
+   * human create output; `--json` passes server truth through untouched.
    */
   outputFields: string[];
-  /** Lifecycle verbs this type supports today (for the `types` VERBS column). */
-  verbs: string[];
   /** Only `customer` types appear in create input and `types` output. */
   visibility: Visibility;
   /**
@@ -50,45 +41,31 @@ export interface TypeEntry {
  */
 export const DEFAULT_WAIT_SECONDS = 240;
 
-/** The lifecycle verbs the object model supports today (kubectl-style column). */
-const LIFECYCLE_VERBS = ["disarm", "delete"];
-
 export const REGISTRY: TypeEntry[] = [
   {
     id: "aws.access_key",
     wire: "aws_access_key",
-    backing: "real IAM key",
-    firesVia: "CloudTrail",
     outputFields: ["access_key_id", "secret_access_key", "region"],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "github.token",
     wire: "github_pat",
-    backing: "real PAT/OAuth token",
-    firesVia: "audit stream",
     outputFields: ["raw_token"],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "anthropic.api_key",
     wire: "anthropic_api_key",
-    backing: "real console API key",
-    firesVia: "rate-limit telemetry",
     outputFields: ["raw_key"],
-    verbs: LIFECYCLE_VERBS,
     visibility: "unreleased",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "database.credentials",
     wire: "postgres_login",
-    backing: "Tripwire TCP edge",
-    firesVia: "connect",
     outputFields: [
       "database_url",
       "url",
@@ -99,25 +76,19 @@ export const REGISTRY: TypeEntry[] = [
       "password",
       "sslmode",
     ],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "web.login",
     wire: "web_login_credential",
-    backing: "Tripwire HTTP edge",
-    firesVia: "credential submit",
     outputFields: ["url", "username", "password"],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "web.cookie",
     wire: "browser_session_cookie",
-    backing: "Tripwire HTTP edge",
-    firesVia: "cookie presented",
     outputFields: [
       "url",
       "cookie_name",
@@ -125,15 +96,12 @@ export const REGISTRY: TypeEntry[] = [
       "cookie_domain",
       "cookie_path",
     ],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
   {
     id: "k8s.config",
     wire: "kubernetes_kubeconfig",
-    backing: "Tripwire k8s edge",
-    firesVia: "API use",
     outputFields: [
       "server",
       "cluster_name",
@@ -142,20 +110,15 @@ export const REGISTRY: TypeEntry[] = [
       "token",
       "kubeconfig",
     ],
-    verbs: LIFECYCLE_VERBS,
     visibility: "customer",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
-  // Internal-only: kept so the snake ids the server returns still map to a dotted
-  // display id, but hidden from the CLI, from `types`, and from create input.
+  // Internal type, hidden from the CLI, from `types`, and from create input.
   {
     id: "dns.label",
     wire: "dns_label",
-    backing: "operator DNS zone",
-    firesVia: "DNS query",
     outputFields: ["fqdn", "qtype"],
-    verbs: LIFECYCLE_VERBS,
-    visibility: "operator",
+    visibility: "internal",
     waitSeconds: DEFAULT_WAIT_SECONDS,
   },
 ];
@@ -175,7 +138,7 @@ const INPUT_LOOKUP: Map<string, TypeEntry> = new Map(
   REGISTRY.filter((e) => e.visibility === "customer").map((e) => [e.id, e]),
 );
 
-/** Reverse map for display: every wire id (customer + operator) -> its entry. */
+/** Reverse map for display: every wire id (customer + internal) -> its entry. */
 const WIRE_LOOKUP: Map<string, TypeEntry> = new Map(
   REGISTRY.map((e) => [e.wire, e]),
 );

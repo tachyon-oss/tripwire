@@ -43,12 +43,11 @@ honor it exactly.
    go-ahead, explore the approved areas (their stack, where credentials already
    live, what an attacker would grep for) and work out which credential types
    are present and which canary types fit where. Then propose 2-3 concrete
-   scenarios. There are eight canary types, in two families. Provider
+   scenarios. There are six canary types, in two families. Provider
    credentials (inert real-looking secrets):
    - an `aws_access_key` in a decoy `.env` / credentials file (a strong lure
      even if they do not use AWS, its only purpose is to be triggered);
-   - a `dns_label` referenced in a config snippet;
-   - an `anthropic_api_key` or `github_pat` in a decoy script or dotfile.
+   - a `github_pat` in a decoy script or dotfile.
    Request-path credentials (Tripwire-hosted facades; each fires when the
    credential is actually used):
    - a `web_login_credential` (a fake admin/login URL with username and
@@ -73,19 +72,18 @@ honor it exactly.
    synchronous and is the one-time credential reveal: the response inlines the
    secret/placement for that type at the top level. `aws_access_key`:
    `access_key_id`/`secret_access_key`/`region`; `github_pat`: `raw_token`;
-   `anthropic_api_key`: `raw_key`; `dns_label`: `fqdn`/`qtype`;
    `web_login_credential`: `url`/`username`/`password`; `browser_session_cookie`:
    `url`/`cookie_name`/`cookie_value`/`cookie_domain`/`cookie_path`;
    `postgres_login`: `database_url`/`host`/`port`/`database`/`username`/`password`/`sslmode`/`url`;
    `kubernetes_kubeconfig`: `kubeconfig` (full YAML) plus
    `server`/`cluster_name`/`user_name`/`bearer_token`/`token`. The server
-   generates every name/host/value, so do not invent zone/name/value/host flags.
-   For provider types create is usually near-instant (the server claims a
-   pre-warmed credential), but use a read timeout of at least 180s as a safety net
-   for a rare cold-pool fallback. For the request-path types
-   (`web_login_credential`, `browser_session_cookie`, `postgres_login`,
-   `kubernetes_kubeconfig`) create is instant and the facade becomes fully live
-   within about 5s, not a 30-60s wait. Capture it now; reads never return the
+   generates every name/host/value, so do not invent name/value/host flags.
+   For provider types create usually returns in a second or two, but use a read
+   timeout of at least 180s as a safety net while it provisions. For the
+   request-path types (`web_login_credential`, `browser_session_cookie`,
+   `postgres_login`, `kubernetes_kubeconfig`) create is instant and the facade
+   becomes fully live within about 5s, not a 30-60s wait. Capture it now; reads
+   never return the
    secret again. If create answers `canary_pending`, the one-time reveal is gone
    and unrecoverable: do NOT retry (a retry mints a second canary and trips the
    quota); find the orphan via `GET /canary`, delete it, then create again.

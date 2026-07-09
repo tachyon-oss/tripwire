@@ -31,7 +31,7 @@ Nothing in the skills should assume the CLI is installed.
 
 ## Auth (email-code login)
 
-Tripwire login is passwordless email-code by default. The agentic flow:
+Tripwire login is passwordless email-code. The agentic flow:
 
 1. Look up a default email with `git config user.email`. Show it to the user
    and ask them to confirm it or supply another address. Never guess silently.
@@ -43,7 +43,7 @@ Tripwire login is passwordless email-code by default. The agentic flow:
 4. `POST /auth/login` with `{"email": "<addr>", "code": "<6 digits>"}`. On
    success returns:
    ```json
-   {"access_token":"<jwt>","token_type":"bearer","expires_at":<unix>,
+   {"access_token":"<token>","token_type":"bearer","expires_at":<unix>,
     "user_id":"usr_...","role":"user"}
    ```
    A wrong/expired/used code returns `400 {"detail":"invalid_or_expired_code"}`.
@@ -51,26 +51,22 @@ Tripwire login is passwordless email-code by default. The agentic flow:
    `GET /auth/me` returns `{"user":{"id","email","role"}}` if you need to echo
    the resolved email back to the user.
 
-Operator/dev accounts may instead use `POST /auth/login` with
-`{"user_id","password"}`. The skills should default to the email flow.
-
 ## Plant a canary: `POST /canary`
 
-Body: `{"type": "<type>", "memo": "<optional note>"}`. `type` is one of eight
+Body: `{"type": "<type>", "memo": "<optional note>"}`. `type` is one of six
 values, in two families:
 
 - Provider credentials (real provider mint, inert against real infra):
-  `dns_label`, `aws_access_key`, `anthropic_api_key`, `github_pat`.
+  `aws_access_key`, `github_pat`.
 - Request-path credentials (Tripwire-hosted facades, no provider mint):
   `web_login_credential`, `browser_session_cookie`, `postgres_login`,
   `kubernetes_kubeconfig`.
 
-`github_pat` additionally accepts `"token_type": "classic_pat" | "oauth"`. All
-eight values above are valid `type`s. Only a genuinely unknown `type`, or extra
-or cross-type fields in the body, are rejected with `422` (`extra="forbid"`).
-For `dns_label` and the request-path types, send only `type` (and optional
-`memo`); the server generates every name/host/value, so do not send any
-name/zone/value/host fields.
+`github_pat` additionally accepts `"token_type": "classic_pat" | "oauth"`. Only
+a genuinely unknown `type`, or extra or cross-type fields in the body, are
+rejected with `422` (`extra="forbid"`). For the request-path types, send only
+`type` (and optional `memo`); the server generates every name/host/value, so do
+not send any name/host/value fields.
 
 Response `201` is the canary object with its secret/placement inlined at the top
 level. This is the ONLY time the secret is returned; capture it now.
@@ -79,8 +75,6 @@ Provider credentials:
 
 - `aws_access_key` -> `access_key_id`, `secret_access_key`, `region`
 - `github_pat` -> `raw_token`
-- `anthropic_api_key` -> `raw_key`
-- `dns_label` -> `fqdn`, `qtype`
 
 Request-path credentials:
 
@@ -96,22 +90,16 @@ Request-path credentials:
 plus summary fields `id`, `type`, `status`, `user_id`, `memo`, `expires_at`,
 `last_checked_at`, `last_used_at`, `created_at`, `updated_at`.
 
-Important: create is synchronous and usually near-instant. For provider types
-the server hands out a pre-warmed credential from its pool (and mints
-`aws_access_key` inline), so they typically return in 1-2s; if a pool is
-momentarily empty it falls back to minting fresh, which can take up to ~100s for
-`aws_access_key`. For request-path types there is no provider mint, so create is
-instant (~0.2s). Still use a generous HTTP read timeout (>=180s) as a safety net
-for the rare cold-pool provider fallback, and show a "provisioning" state rather
-than letting a slow create look hung.
+Important: create is synchronous. For request-path types the credential is
+returned right away; for provider types it is returned once it's ready, usually
+in a second or two but occasionally up to ~2 min. Use a generous HTTP read
+timeout (>=180s) as a safety net, and show a "provisioning" state rather than
+letting a slow create look hung.
 
 Warm-up for request-path types: the credential is returned immediately, and the
-facade becomes fully live (the host resolves, serves its page, and detects
-credential use) within about 5s of create. This is two 5s snapshot TTLs settling
-(the authoritative nameserver for the per-host DNS record, and the public
-listener that serves and matches requests). It is not DNS propagation and is not
-a 30-60s wait; if you have just created one, a few seconds is enough before it
-is armed.
+facade becomes fully live (it serves its page and detects credential use) within
+about 5s of create. It is not a 30-60s wait; if you have just created one, a few
+seconds is enough before it is armed.
 
 Non-201 outcomes:
 - `429 {"detail":"canary_pending"}` - not minted within the wait window. The
@@ -121,11 +109,11 @@ Non-201 outcomes:
   `GET /canary`, `DELETE /canary/{id}` it, then create again. Prefer a client
   read timeout above the server wait window (below) so this outcome is rare.
 - `403 {"detail":{"error":"quota_exceeded","type","cap"}}` - the per-type live
-  cap for this tier is reached. Caps vary by type (1-5 on the default tier):
-  `dns_label` 5; `anthropic_api_key` 2; `web_login_credential`,
-  `browser_session_cookie`, `postgres_login`, `kubernetes_kubeconfig` 2 each;
-  `github_pat` 1; `aws_access_key` 1. The response echoes the offending `type`
-  and its `cap`. Deactivate or delete an existing one of that type first.
+  cap for this tier is reached. Caps vary by type (1-2 on the default tier):
+  `web_login_credential`, `browser_session_cookie`, `postgres_login`,
+  `kubernetes_kubeconfig` 2 each; `github_pat` 1; `aws_access_key` 1. The
+  response echoes the offending `type` and its `cap`. Deactivate or delete an
+  existing one of that type first.
 - `429 {"detail":"create_rate_limited"}` - too many creates in the window.
 - `502 {"detail":"provisioning_failed"}` - provider mint failed; nothing issued;
   retry.
@@ -135,26 +123,23 @@ Non-201 outcomes:
 - `GET /canary?type=<type>&include_deleted=<bool>` -> `{"canaries":[<summary>...]}`.
   Summary only, never the secret. `type` and `include_deleted` are optional.
 - `GET /canary/{id}` -> one summary. "Did it fire?" is answered by
-  `last_used_at` for all eight types: nothing legitimate should ever touch a
+  `last_used_at` for all six types: nothing legitimate should ever touch a
   canary credential, so a populated `last_used_at` means something reached for
-  it. The read folds in the latest events at read time, so request-path types
-  report through the same field. For request-path types `last_used_at` fires when
-  the attacker actually USES the credential (POSTs the username/password to the
-  login facade, presents the session cookie, sends the bearer token, or connects
-  with the postgres password), not when they merely view the facade page. That is
-  intended. `last_checked_at` is when Tripwire last polled provider-side usage.
-  Point the user at their Tripwire account for full per-event detail (source IP,
-  time, action).
-- `POST /canary/{id}/deactivate` -> summary. Disables the credential. `dns_label`
-  flips synchronously; request-path facades stop resolving/matching once the
-  next listener snapshot settles (a few seconds, same TTLs as warm-up); provider
-  types disable on the next controller pass.
-- `DELETE /canary/{id}` -> summary. Sets the canary to be torn down. `dns_label`
-  and the request-path facades are removed synchronously (the host stops
-  resolving once the next snapshot settles); provider types (aws/github/anthropic)
-  are soft-deleted and the underlying resource is removed asynchronously on the
-  next controller pass, so the immediate response may still show
-  `status:"active"`. Re-read with `GET /canary/{id}` (or list with
+  it. The read reflects the latest activity, so request-path types report through
+  the same field. For request-path types `last_used_at` fires when the attacker
+  actually USES the credential (POSTs the username/password to the login facade,
+  presents the session cookie, sends the bearer token, or connects with the
+  postgres password), not when they merely view the facade page. That is
+  intended. `last_checked_at` is when Tripwire last checked for use. Point the
+  user at their Tripwire account for full per-event detail (source IP, time,
+  action).
+- `POST /canary/{id}/deactivate` -> summary. Disables the credential.
+  Request-path facades stop matching within a few seconds; provider types
+  disable shortly after.
+- `DELETE /canary/{id}` -> summary. Sets the canary to be torn down. Request-path
+  facades are removed within a few seconds; provider types are soft-deleted and
+  the underlying resource is removed shortly after, so the immediate response may
+  still show `status:"active"`. Re-read with `GET /canary/{id}` (or list with
   `include_deleted=true`) to confirm it reached `deleted`.
 
 ## Notes for skill authors

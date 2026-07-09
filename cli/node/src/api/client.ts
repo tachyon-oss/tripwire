@@ -1,7 +1,7 @@
 /**
  * HTTP client for the Tripwire REST API, built on the global `fetch` (Node
  * >=18). Deliberately mirrors the behavior of the Python `ApiClient`
- * (`public/tripwire_cli/tripwire_cli/client.py`) so the two clients are
+ * (`cli/python/tripwire_cli/client.py`) so the two clients are
  * interchangeable against the same server.
  */
 import { ApiError } from "./errors.js";

@@ -91,7 +91,6 @@ export function buildProgram(session: Session): Command {
     .command("create")
     .argument("[type]", `canary type, one of: ${creatableTypeList()}`)
     .description("create a canary; the credential is shown once, at creation")
-    .option("--name <name>", "name for the placement block (e.g. the AWS profile name)")
     .option("--note <note>", "your own note to remember where you placed it")
     .option("--expires <when>", "expiry timestamp (ISO 8601)")
     .option("-o, --output <file>", "write the credential to a file instead of stdout")
@@ -100,7 +99,6 @@ export function buildProgram(session: Session): Command {
         async (
           type: string | undefined,
           opts: {
-            name?: string;
             note?: string;
             expires?: string;
             output?: string;
@@ -108,7 +106,6 @@ export function buildProgram(session: Session): Command {
         ) =>
           runCreate(session, {
             type,
-            name: opts.name,
             note: opts.note,
             expires: opts.expires,
             output: opts.output,
@@ -198,7 +195,7 @@ export function buildProgram(session: Session): Command {
 
   bundle
     .command("create")
-    .description("issue a new bundle for the logged-in operator")
+    .description("issue a new bundle for you")
     .action(action(async () => runBundleCreate(session)));
 
   return program;

@@ -16,10 +16,9 @@ export class CliError extends Error {
 }
 
 /**
- * Substrings the server (or its JWT/Fernet token layer) leaks on a 401 when the
- * cached token is malformed or undecodable. Opaque to users, so map them to a
- * plain "session expired" message instead of echoing the raw detail. Mirrors the
- * Python CLI's `_EXPIRED_SESSION_TOKEN_MARKERS`.
+ * Substrings the server leaks on a 401 when the cached token is malformed or
+ * undecodable. Opaque to users, so map them to a plain "session expired" message
+ * instead of echoing the raw detail.
  */
 const EXPIRED_SESSION_MARKERS = [
   "invalid header padding",
@@ -66,13 +65,4 @@ export function action<A extends unknown[]>(
       process.exitCode = 1;
     }
   };
-}
-
-/**
- * Report a feature the current server does not implement yet and exit nonzero.
- * Used for grammar that outpaces today's API (arm, rotate, `--in`) — we never
- * fake success. Throws a `CliError` so `action()` prints it once.
- */
-export function notSupported(message: string): never {
-  throw new CliError(message);
 }

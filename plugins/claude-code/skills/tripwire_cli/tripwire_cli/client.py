@@ -13,11 +13,11 @@ DEFAULT_TIMEOUT = 10.0
 # window, so an unreachable server never hangs for the full read timeout.
 CONNECT_TIMEOUT = 5.0
 
-# `POST /canary` is synchronous and provider-minted types can take ~12s/44s/100s
-# today; the server waits up to ``CANARY_CREATE_WAIT_SECONDS`` (180s) before it
-# gives up. The client read timeout MUST stay above that window: if the client
-# abandons the request first, the server still creates the canary, the one-time
-# credential reveal is lost, and the cap-1 quota is consumed with no recovery.
+# `POST /canary` is synchronous and some types take a little while to provision;
+# the server waits up to ~180s before it gives up. The client read timeout MUST
+# stay above that window: if the client abandons the request first, the server
+# still creates the canary, the one-time credential reveal is lost, and the
+# per-type quota is consumed with no recovery.
 CREATE_READ_TIMEOUT = 240.0
 
 
@@ -102,11 +102,6 @@ class ApiClient:
         if not response.content:
             return {}
         return response.json()
-
-    def login(self, user_id: str, password: str) -> dict[str, Any]:
-        return self._request(
-            "POST", "/auth/login", {"user_id": user_id, "password": password}
-        )
 
     def login_start(self, email: str) -> dict[str, Any]:
         """Begin an email-code login: the server emails a 6-digit code. The

@@ -487,8 +487,8 @@ def test_commands_need_login(tmp_path):
 # --- login / logout / whoami ------------------------------------------------
 
 
-# Login is email-code only: the operator password path and the non-interactive
-# --code flag were removed, so those flags no longer exist.
+# Login is email-code only: the password and non-interactive --code login paths
+# were removed, so those flags no longer exist.
 
 
 @pytest.mark.parametrize("flag", ["--user-id", "--password", "--code"])

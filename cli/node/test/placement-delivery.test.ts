@@ -11,15 +11,17 @@ import { Session } from "../src/util/session.js";
 
 /**
  * End-to-end (offline) exercise of the placement create path through the real
- * commander program, with the network faked at the `fetch` boundary. This is the
- * critical delivery contract: the rendered block on stdout, everything else on
- * stderr, and the `-o` writer.
+ * commander program, with the network faked at the `fetch` boundary. The
+ * contract: ONLY the rendered block on stdout on the default path (nothing on
+ * stderr), plus the `-o` writer. The profile name comes from the backend
+ * response (`name`).
  */
 
 const AWS_RESPONSE = {
   id: "tw_abc123",
   type: "aws_access_key",
   status: "active",
+  name: "acme-prod",
   access_key_id: "AKIAEXAMPLE",
   secret_access_key: "wJalrEXAMPLEKEY",
   region: "us-east-1",
@@ -30,7 +32,6 @@ let stdout: string;
 let stderr: string;
 let lastRequestBody: unknown;
 
-/** A fake `fetch` that records the request body and returns the canned response. */
 const fakeFetch: typeof fetch = async (_url, init) => {
   const raw = (init as RequestInit | undefined)?.body;
   lastRequestBody = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -78,36 +79,27 @@ afterEach(() => {
 
 describe("aws.profile placement — default (stdout) delivery", () => {
   it("POSTs the snake wire type (dotted → snake translation preserved)", async () => {
-    await run("canary", "create", "aws.profile", "--name", "prod-deploy");
+    await run("canary", "create", "aws.profile");
     expect((lastRequestBody as { type?: string }).type).toBe("aws_access_key");
   });
 
-  it("prints ONLY the block to stdout, with a leading and trailing newline", async () => {
-    await run("canary", "create", "aws.profile", "--name", "prod-deploy");
+  it("prints ONLY the block (backend-named) to stdout, and nothing to stderr", async () => {
+    await run("canary", "create", "aws.profile");
     expect(stdout).toBe(
-      "\n[profile prod-deploy]\n" +
+      "\n[profile acme-prod]\n" +
         "aws_access_key_id = AKIAEXAMPLE\n" +
         "aws_secret_access_key = wJalrEXAMPLEKEY\n" +
         "region = us-east-1\n",
     );
-  });
-
-  it("sends all reporting to stderr, never the credential block", async () => {
-    await run("canary", "create", "aws.profile", "--name", "prod-deploy");
-    expect(stderr).toContain("tw_abc123");
-    expect(stderr).toContain("(via aws.profile)");
-    expect(stderr).toContain("name: prod-deploy");
-    // The block must NOT leak onto stderr.
-    expect(stderr).not.toContain("[profile prod-deploy]");
-    expect(stderr).not.toContain("aws_secret_access_key");
+    expect(stderr).toBe("");
   });
 });
 
 describe("aws.credentials placement — bare header, no region", () => {
   it("renders a [<name>] block without a region line", async () => {
-    await run("canary", "create", "aws.credentials", "--name", "s3-sync");
+    await run("canary", "create", "aws.credentials");
     expect(stdout).toBe(
-      "\n[s3-sync]\n" +
+      "\n[acme-prod]\n" +
         "aws_access_key_id = AKIAEXAMPLE\n" +
         "aws_secret_access_key = wJalrEXAMPLEKEY\n",
     );
@@ -118,33 +110,24 @@ describe("aws.credentials placement — bare header, no region", () => {
 describe("aws.profile placement — -o file delivery", () => {
   it("writes the block to the file and keeps stdout empty", async () => {
     const target = join(dir, "config");
-    await run("canary", "create", "aws.profile", "--name", "prod-deploy", "-o", target);
+    await run("canary", "create", "aws.profile", "-o", target);
     expect(stdout).toBe("");
     expect(readFileSync(target, "utf8")).toBe(
-      "[profile prod-deploy]\n" +
+      "[profile acme-prod]\n" +
         "aws_access_key_id = AKIAEXAMPLE\n" +
         "aws_secret_access_key = wJalrEXAMPLEKEY\n" +
         "region = us-east-1\n",
     );
-    expect(stderr).toContain(`wrote [profile prod-deploy] to ${target}`);
+    expect(stderr).toContain(target);
   });
 
   it("appends to an existing file with a separator (no fuse, no dedup)", async () => {
     const target = join(dir, "config");
     writeFileSync(target, "[profile existing]\naws_access_key_id = OLD\n");
-    await run("canary", "create", "aws.profile", "--name", "prod-deploy", "-o", target);
+    await run("canary", "create", "aws.profile", "-o", target);
     const contents = readFileSync(target, "utf8");
     expect(contents).toContain("[profile existing]");
-    expect(contents).toContain("\n\n[profile prod-deploy]\n");
+    expect(contents).toContain("\n\n[profile acme-prod]\n");
     expect(stdout).toBe("");
-  });
-});
-
-describe("aws placement — OPSEC name gate blocks the mint", () => {
-  it("rejects a banned --name before any credential is created", async () => {
-    await run("canary", "create", "aws.profile", "--name", "prod-honeypot");
-    expect(process.exitCode).toBe(1);
-    expect(stdout).toBe("");
-    expect(stderr).toContain('contains the banned term "honeypot"');
   });
 });

@@ -32,11 +32,11 @@ modify, or delete anything.
 
 4. **Summarize plainly:** which canaries exist, their type and surface, and
    whether any shows use. A populated `last_used_at` means something reached
-   for that credential. This is the fired signal for all eight types
-   (`dns_label`, `aws_access_key`, `anthropic_api_key`, `github_pat`,
-   `web_login_credential`, `browser_session_cookie`, `postgres_login`,
-   `kubernetes_kubeconfig`); the read folds in the latest events, so the
-   request-path types report through the same `last_used_at` field. For the
+   for that credential. This is the fired signal for all six types
+   (`aws_access_key`, `github_pat`, `web_login_credential`,
+   `browser_session_cookie`, `postgres_login`, `kubernetes_kubeconfig`); the
+   read reflects the latest activity, so the request-path types report through
+   the same `last_used_at` field. For the
    request-path types that field fires when the attacker actually uses the
    credential (submits the login username/password, presents the session cookie,
    sends the bearer token, or connects with the postgres password), not when

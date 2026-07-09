@@ -6,7 +6,7 @@ import { createErrorMessage } from "../src/commands/create.js";
 describe("create error mapping", () => {
   it("explains a still-provisioning orphan (429 canary_pending)", () => {
     const message = createErrorMessage(new ApiError(429, "canary_pending"));
-    expect(message).toContain("still provisioning");
+    expect(message).toContain("still being prepared");
     expect(message).toContain("tripwire canary delete");
   });
 

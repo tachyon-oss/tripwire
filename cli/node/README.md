@@ -41,8 +41,8 @@ tripwire whoami
 tripwire status [--watch] [--json]
 tripwire api <METHOD> <path> [body] [--json]
 
-tripwire canary create <type> [--name N] [--note S] [--in <id>] [--expires D] [-o <file>]
-tripwire canary list [--type T] [--fired] [--in <id>] [--json]
+tripwire canary create <type> [--note S] [--expires D] [-o <file>]
+tripwire canary list [--type T] [--fired] [--json]
 tripwire canary show <id> [--json]
 tripwire canary disarm <id>
 tripwire canary delete <id>
@@ -65,19 +65,21 @@ Types use a dotted `namespace.artifact` id, and the dotted id is the only value
 expects on the wire (e.g. `aws.access_key` → `aws_access_key`); `--json` output
 is verbatim server truth (snake ids), while human tables show the dotted ids.
 
-| type | backing | fires via |
-|---|---|---|
-| `aws.access_key` | real IAM key | CloudTrail |
-| `github.token` | real PAT/OAuth token | audit stream |
-| `database.credentials` | Tripwire TCP edge | connect |
-| `web.login` | Tripwire HTTP edge | credential submit |
-| `web.cookie` | Tripwire HTTP edge | cookie presented |
-| `k8s.config` | Tripwire k8s edge | API use |
+| type | what it is |
+|---|---|
+| `aws.access_key` | AWS access key |
+| `github.token` | GitHub token |
+| `database.credentials` | database login |
+| `web.login` | fake login page + password |
+| `web.cookie` | browser session cookie |
+| `k8s.config` | Kubernetes kubeconfig |
+| `aws.profile` | AWS access key, rendered into `~/.aws/config` |
+| `aws.credentials` | AWS access key, rendered into `~/.aws/credentials` |
 
-`database.credentials` renders a PostgreSQL login; `web.cookie` renders a
-browser session cookie. `anthropic.api_key` is coming soon (not yet creatable).
+The last two rows are AWS placements: CLI sugar that mints an `aws.access_key`
+and renders it straight into a real AWS config format (see below).
 
-Run `tripwire canary types` for the released catalog and `tripwire canary types
+Run `tripwire canary types` for the full catalog and `tripwire canary types
 <type>` for detail.
 
 ## AWS placements
@@ -109,9 +111,8 @@ Delivery contract:
   0600). If that write fails *after* the credential was minted, the block is
   dumped to stdout with a loud warning so the one-time secret is never lost.
 
-`--name` is checked against a list of operator terms (`canary`, `honeypot`,
-`decoy`, ...) and rejected if it would blow the decoy's cover. Omit it and the
-CLI generates an organic `{repo}-{role}` name. `--note` is stored on the canary
+The profile/label name is generated automatically to look organic, so it never
+blows the decoy's cover; you do not choose it. `--note` is stored on the canary
 but is **never** written into the config file.
 
 ## Scripting
@@ -132,9 +133,3 @@ npm run build     # tsup -> dist/
 npm test          # vitest (offline)
 npm run typecheck # tsc --noEmit
 ```
-
-## Notes on API coverage
-
-`--in` (containment) on `create`/`list` is ahead of today's server and reports
-"not yet supported" instead of faking success; it lights up the moment the
-server gains it.

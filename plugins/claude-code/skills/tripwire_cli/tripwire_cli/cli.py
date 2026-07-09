@@ -1,16 +1,15 @@
 """Command-line client for Tripwire canaries.
 
 Commands:
-  tripwire login                       log in (email-code by default), cache a
-                                       token; --user-id/--password for operators
-  tripwire logout                      forget the cached token
-  tripwire whoami                      print the cached identity
-  tripwire canaries list               list your canaries (summary only)
-  tripwire canaries get <id>           show one canary summary
-  tripwire canaries create --type ...  create a canary; its credential is
-                                       returned once, in this response
-  tripwire canaries deactivate <id>    deactivate a canary
-  tripwire canaries delete <id>        delete a canary
+  tripwire login                     log in (email-code) and cache a token
+  tripwire logout                    forget the cached token
+  tripwire whoami                    print the cached identity
+  tripwire canary list               list your canaries (summary only)
+  tripwire canary show <id>          show one canary summary
+  tripwire canary create --type ...  create a canary; its credential is
+                                     returned once, in this response
+  tripwire canary deactivate <id>    deactivate a canary
+  tripwire canary delete <id>        delete a canary
 
 `login` does not take a server flag. The server is resolved as
 $TRIPWIRE_SERVER, then the last-used cached server, then the default; set
@@ -51,15 +50,13 @@ def _git_user_email() -> str | None:
 DEFAULT_SERVER = "https://tripwire.so/api/v1"
 
 # The canary types the API's POST /canary accepts. The provider-minted types
-# (aws/anthropic/github) take ~2 min to provision; the request-path types
+# (aws/github) provision on create; the request-path types
 # (web_login_credential, browser_session_cookie, postgres_login,
 # kubernetes_kubeconfig) inline their artifact fields directly in the create
 # response. The CLI prints the server JSON verbatim, so new inlined fields flow
 # through unchanged.
 CANARY_TYPES = [
-    "dns_label",
     "aws_access_key",
-    "anthropic_api_key",
     "github_pat",
     "web_login_credential",
     "browser_session_cookie",
@@ -128,10 +125,10 @@ class Context:
             return None
 
 
-# Substrings the server (or its JWT/Fernet token layer) leaks on a 401 when the
-# cached token is malformed or undecodable. These are opaque to users, so we map
-# them to a plain "session expired" message instead of echoing the raw detail.
-_EXPIRED_SESSION_TOKEN_MARKERS = (
+# Substrings the server may return on a 401 when the cached token is malformed
+# or undecodable. These are opaque to users, so we map them to a plain "session
+# expired" message instead of echoing the raw detail.
+_EXPIRED_SESSION_MARKERS = (
     "invalid header padding",
     "invalid token",
     "not enough segments",
@@ -146,7 +143,7 @@ def _unauthorized_message(detail: str) -> str:
     header padding") are meaningless to users, so map them to a clear
     session-expired prompt; otherwise keep the server detail and append a hint."""
     lowered = detail.lower()
-    if any(marker in lowered for marker in _EXPIRED_SESSION_TOKEN_MARKERS):
+    if any(marker in lowered for marker in _EXPIRED_SESSION_MARKERS):
         return "session expired; run `tripwire login`"
     return f"401: {detail}\nhint: run `tripwire login`"
 
@@ -181,10 +178,6 @@ def cli(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--user-id", help="operator user id (selects password login)")
-@click.option(
-    "--password", help="operator password (selects password login; prefer the prompt)"
-)
 @click.option(
     "--email",
     help="email for passwordless login (skips the prompt; for headless/CI use)",
@@ -200,39 +193,21 @@ def cli(ctx: click.Context) -> None:
 @_handle_errors
 def login(
     obj: Context,
-    user_id: str | None,
-    password: str | None,
     email: str | None,
     code: str | None,
 ) -> None:
     """Log in and cache a token.
 
-    Defaults to passwordless email-code login. Passing --user-id or --password
-    selects the operator (user-id + password) login instead, so operator
-    scripts keep working unchanged.
-
-    For headless/CI use, pass --email (and optionally --code) to skip the
-    interactive prompts. With both --email and --code, a code that was already
-    emailed is exchanged directly without re-sending one or prompting.
+    Uses passwordless email-code login. For headless/CI use, pass --email (and
+    optionally --code) to skip the interactive prompts. With both --email and
+    --code, a code that was already emailed is exchanged directly without
+    re-sending one or prompting.
     """
     server = resolve_login_server(dict(os.environ), obj.cached_server())
     client = obj.client(server)
-    if user_id is not None or password is not None:
-        creds = _password_login(client, server, user_id, password)
-    else:
-        creds = _email_login(client, server, obj.git_email(), email=email, code=code)
+    creds = _email_login(client, server, obj.git_email(), email=email, code=code)
     path = obj.store.save(creds)
-    click.echo(f"logged in as {creds.user_id} ({creds.role}); token cached at {path}")
-
-
-def _password_login(
-    client: ApiClient, server: str, user_id: str | None, password: str | None
-) -> credentials.Credentials:
-    """Operator login: user-id + password."""
-    user_id = user_id or click.prompt("user_id")
-    password = password or click.prompt("password", hide_input=True)
-    response = client.login(user_id, password)
-    return _credentials_from_login(server, response)
+    click.echo(f"logged in as {creds.user_id}; token cached at {path}")
 
 
 def _email_login(
@@ -325,7 +300,6 @@ def _credentials_from_login(
         user_id=response["user_id"],
         access_token=response["access_token"],
         expires_at=int(response["expires_at"]),
-        role=response["role"],
         email=email,
     )
 
@@ -348,32 +322,31 @@ def whoami(obj: Context) -> None:
     click.echo(f"user_id:  {creds.user_id}")
     if creds.email:
         click.echo(f"email:    {creds.email}")
-    click.echo(f"role:     {creds.role}")
 
 
 @cli.group()
-def canaries() -> None:
+def canary() -> None:
     """Manage canaries."""
 
 
-@canaries.command("list")
+@canary.command("list")
 @click.pass_obj
 @_handle_errors
-def canaries_list(obj: Context) -> None:
+def canary_list(obj: Context) -> None:
     """List the canaries you own (summary only)."""
     _echo_json(obj.authed_client().list_canaries())
 
 
-@canaries.command("get")
+@canary.command("show")
 @click.argument("canary_id")
 @click.pass_obj
 @_handle_errors
-def canaries_get(obj: Context, canary_id: str) -> None:
+def canary_show(obj: Context, canary_id: str) -> None:
     """Show one canary summary (no credential)."""
     _echo_json(obj.authed_client().get_canary(canary_id))
 
 
-@canaries.command("create")
+@canary.command("create")
 @click.option(
     "--type", "canary_type", type=click.Choice(CANARY_TYPES), required=True
 )
@@ -391,15 +364,15 @@ def canaries_get(obj: Context, canary_id: str) -> None:
 )
 @click.pass_obj
 @_handle_errors
-def canaries_create(
+def canary_create(
     obj: Context, canary_type: str, memo: str | None, timeout: float | None
 ) -> None:
     """Create a canary. The credential is returned once, in this response."""
     read_timeout = _resolve_create_timeout(timeout, dict(os.environ))
     payload = build_create_payload(canary_type=canary_type, memo=memo)
     click.echo(
-        "creating the canary (usually a second or two; up to ~2 min if the "
-        "warm pool is cold).",
+        "creating the canary (usually a second or two; up to ~2 min while it "
+        "provisions).",
         err=True,
     )
     try:
@@ -438,8 +411,8 @@ def _create_error_message(exc: ApiError) -> str | None:
             "canary is still provisioning, so its one-time credential reveal was "
             "not returned in this response and cannot be recovered. creating "
             "again would mint a second canary and trip the per-type quota; "
-            "instead, find this orphan with `tripwire canaries list`, delete it "
-            "with `tripwire canaries delete <id>`, then recreate."
+            "instead, find this orphan with `tripwire canary list`, delete it "
+            "with `tripwire canary delete <id>`, then recreate."
         )
     if exc.status == 502 and exc.detail == "provisioning_failed":
         return (
@@ -449,20 +422,20 @@ def _create_error_message(exc: ApiError) -> str | None:
     return None
 
 
-@canaries.command("deactivate")
+@canary.command("deactivate")
 @click.argument("canary_id")
 @click.pass_obj
 @_handle_errors
-def canaries_deactivate(obj: Context, canary_id: str) -> None:
+def canary_deactivate(obj: Context, canary_id: str) -> None:
     """Deactivate a canary."""
     _echo_json(obj.authed_client().deactivate_canary(canary_id))
 
 
-@canaries.command("delete")
+@canary.command("delete")
 @click.argument("canary_id")
 @click.pass_obj
 @_handle_errors
-def canaries_delete(obj: Context, canary_id: str) -> None:
+def canary_delete(obj: Context, canary_id: str) -> None:
     """Delete a canary."""
     _echo_json(obj.authed_client().delete_canary(canary_id))
 

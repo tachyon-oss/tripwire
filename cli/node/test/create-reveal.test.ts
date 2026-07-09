@@ -77,13 +77,13 @@ describe("H1: placement create with missing credential fields", () => {
   it("dumps the raw create JSON to stdout and errors (never drops the minted secret)", async () => {
     // A 2xx response that is missing access_key_id / secret_access_key.
     const resp = { id: "tw_x", type: "aws_access_key", status: "active", region: "us-east-1" };
-    await run(makeSession(jsonFetch(resp)), "canary", "create", "aws.profile", "--name", "prod-deploy");
+    await run(makeSession(jsonFetch(resp)), "canary", "create", "aws.profile");
 
     expect(process.exitCode).toBe(1);
     // The raw response landed on stdout so the one-time secret isn't lost.
     expect(stdout).toContain('"id": "tw_x"');
     expect(stdout).toContain('"type": "aws_access_key"');
-    expect(stderr).toContain("did not include the expected AWS credential fields");
+    expect(stderr).toContain("could not render the block");
   });
 });
 
@@ -104,7 +104,7 @@ describe("H3: writeJsonReveal separates the write from the chmod", () => {
     expect(stdout).toBe("");
     expect((JSON.parse(readFileSync(target, "utf8")) as { access_key_id: string }).access_key_id).toBe("AKIA");
     expect(statSync(target).mode & 0o777).toBe(0o600);
-    expect(stderr).toContain("(mode 0600)");
+    expect(stderr).toContain(`wrote ${target}`);
   });
 
   it("on chmod-only failure: keeps the written file, warns, does NOT re-dump the secret", async () => {

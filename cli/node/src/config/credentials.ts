@@ -4,7 +4,7 @@
  * The token and identity are kept in a single JSON file, by default
  * `~/.config/tripwire/credentials.json` (honoring `XDG_CONFIG_HOME`). This is
  * the SAME file and SAME shape the Python CLI reads/writes
- * (`public/tripwire_cli/tripwire_cli/credentials.py`), so a `login` from either
+ * (`cli/python/tripwire_cli/credentials.py`), so a `login` from either
  * CLI is honored by the other. The server URL is stored only when it differs
  * from the public default, so a normal user's cache is just their token and
  * identity.

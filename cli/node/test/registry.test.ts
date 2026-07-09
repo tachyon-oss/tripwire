@@ -46,7 +46,7 @@ describe("type registry", () => {
   it("maps a wire id the server returns back to its dotted display id", () => {
     expect(dottedForWire("aws_access_key")).toBe("aws.access_key");
     expect(dottedForWire("postgres_login")).toBe("database.credentials");
-    // Unreleased and operator wire ids still map for display even though they
+    // Unreleased and internal wire ids still map for display even though they
     // are not accepted as create input.
     expect(dottedForWire("github_pat")).toBe("github.token");
     expect(dottedForWire("anthropic_api_key")).toBe("anthropic.api_key");
@@ -60,7 +60,7 @@ describe("type registry", () => {
     expect(tryResolveType("nope.nope")).toBeUndefined();
   });
 
-  it("shows github.token but keeps unreleased/operator types out of catalog + input", () => {
+  it("shows github.token but keeps unreleased/internal types out of catalog + input", () => {
     const ids = customerTypes().map((e) => e.id);
     // github.token is released: creatable and shown.
     expect(ids).toContain("github.token");
@@ -80,7 +80,7 @@ describe("type registry", () => {
     }
   });
 
-  it("carries the exact per-type output fields (mirrors _RESPONSE_BY_TYPE)", () => {
+  it("carries the exact per-type output fields", () => {
     expect(resolveType("aws.access_key").outputFields).toEqual([
       "access_key_id",
       "secret_access_key",

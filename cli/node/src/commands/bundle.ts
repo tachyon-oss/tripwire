@@ -42,7 +42,7 @@ function bundleErrorMessage(error: unknown): string | null {
     return `bundle is ${error.detail} and can no longer be accessed.`;
   }
   if (error.status === 409 && error.detail === "bundle_preparing") {
-    return "bundle is still preparing (warming provider inventory); try again shortly.";
+    return "the bundle is still being prepared; try again shortly.";
   }
   if (error.status === 429) {
     return "rate limited; wait a few minutes and try again.";
@@ -65,9 +65,9 @@ async function withBundleErrors<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Download a bundle, retrying while the server reports `409 bundle_preparing`
- * (its provider inventory is warming). Any other error propagates immediately.
- * On exhausted retries the last `409` propagates (mapped to a clear message).
+ * Download a bundle, retrying while the server reports `409 bundle_preparing`.
+ * Any other error propagates immediately. On exhausted retries the last `409`
+ * propagates (mapped to a clear message).
  */
 export async function downloadWithRetry(
   client: Pick<ApiClient, "downloadBundle">,
@@ -192,7 +192,7 @@ export async function runBundleDownload(
 ): Promise<void> {
   const client = session.authedClient(); // login guard: throws before any request.
   await withBundleErrors(async () => {
-    // No id given: issue a fresh bundle for the logged-in operator first, then
+    // No id given: issue a fresh bundle for the logged-in user first, then
     // download it. The create body is empty — the auth-derived recipient and the
     // template are both chosen server-side (no email / turnstile_token / template).
     let bundleId = id;
@@ -331,7 +331,7 @@ interface BundleCreateResult {
 export async function runBundleCreate(session: Session): Promise<void> {
   const client = session.authedClient();
   // The CLI is always authenticated, so the backend issues the bundle for the
-  // logged-in operator. The request body is empty: no email, turnstile_token, or
+  // logged-in user. The request body is empty: no email, turnstile_token, or
   // template_id (template selection is internal — the server picks).
   const result = (await withBundleErrors(() => client.createBundle({}))) as BundleCreateResult;
   out(`bundle_id:  ${result.bundle_id ?? "unknown"}`);

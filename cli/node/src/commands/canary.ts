@@ -192,7 +192,7 @@ function explainType(arg: string, json: boolean): void {
 /** Explain a placement: what it creates, what it renders, its flags + example. */
 function explainPlacement(placement: PlacementDef, json: boolean): void {
   const underlying = resolveType(placement.underlyingType);
-  const flags = ["--name", "-o/--output"];
+  const flags = ["-o/--output"];
   const example = `tripwire canary create ${placement.id} >> ${placement.targetFile}`;
   const sampleBlock = placement.render("<name>", {
     accessKeyId: "AKIA…",

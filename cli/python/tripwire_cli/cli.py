@@ -50,11 +50,10 @@ def _git_user_email() -> str | None:
 
 DEFAULT_SERVER = credentials.DEFAULT_SERVER
 
-# The canary types released through the public CLI. Provider types that are not
-# yet public and `dns_label` remain API capabilities but are deliberately not
-# offered by the CLI. Request-path types inline their artifact fields directly
-# in the create response. The CLI prints the server JSON verbatim, so new
-# inlined fields flow through unchanged.
+# The canary types released through the public CLI. Some server-side types are
+# deliberately not offered here. Request-path types inline their artifact fields
+# directly in the create response. The CLI prints the server JSON verbatim, so
+# new inlined fields flow through unchanged.
 CANARY_TYPES = [
     "aws_access_key",
     "web_login_credential",
@@ -124,9 +123,9 @@ class Context:
             return None
 
 
-# Substrings the server (or its JWT/Fernet token layer) leaks on a 401 when the
-# cached token is malformed or undecodable. These are opaque to users, so we map
-# them to a plain "session expired" message instead of echoing the raw detail.
+# Substrings the server leaks on a 401 when the cached token is malformed or
+# undecodable. These are opaque to users, so we map them to a plain "session
+# expired" message instead of echoing the raw detail.
 _EXPIRED_SESSION_TOKEN_MARKERS = (
     "invalid header padding",
     "invalid token",
@@ -349,8 +348,7 @@ def canaries_create(
     read_timeout = _resolve_create_timeout(timeout, dict(os.environ))
     payload = build_create_payload(canary_type=canary_type, memo=memo)
     click.echo(
-        "creating the canary (usually a second or two; up to ~2 min if the "
-        "warm pool is cold).",
+        "creating the canary (up to ~2 min while it provisions).",
         err=True,
     )
     try:

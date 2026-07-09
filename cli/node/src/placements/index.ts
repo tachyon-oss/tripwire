@@ -1,12 +1,11 @@
 /**
  * AWS placement registry — CLI-layer sugar over `aws.access_key`.
  *
- * A placement mints the underlying canary via the UNCHANGED `POST /canary`, then
+ * A placement mints the underlying canary via `POST /canary`, then
  * renders the returned one-time credential into a real config-file format. The
  * stored row is just the underlying type; the placement affects only create-time
  * output. Renderers are self-contained here with no external dependencies.
  */
-import { DEFAULT_ROLES } from "./namegen.js";
 import { type AwsKeyFields, renderAwsCredentials, renderAwsProfile } from "./render.js";
 
 export interface PlacementDef {
@@ -14,10 +13,8 @@ export interface PlacementDef {
   id: string;
   /** Dotted id of the underlying canary type this mints. */
   underlyingType: string;
-  /** Target file this block is meant for (shown in next-step hints). */
+  /** Target file this block is meant for. */
   targetFile: string;
-  /** Role wordlist for the organic `{context}-{role}` default name. */
-  roles: readonly string[];
   /** Render the returned credential into the placement's config block. */
   render(name: string, fields: AwsKeyFields): string;
 }
@@ -27,14 +24,12 @@ export const PLACEMENTS: PlacementDef[] = [
     id: "aws.profile",
     underlyingType: "aws.access_key",
     targetFile: "~/.aws/config",
-    roles: DEFAULT_ROLES,
     render: renderAwsProfile,
   },
   {
     id: "aws.credentials",
     underlyingType: "aws.access_key",
     targetFile: "~/.aws/credentials",
-    roles: DEFAULT_ROLES,
     render: renderAwsCredentials,
   },
 ];

@@ -20,9 +20,7 @@ class Credentials:
     user_id: str
     access_token: str
     expires_at: int
-    role: str
-    # Optional: present for email-code logins, absent for operator
-    # (user-id/password) logins and for caches written by older CLIs.
+    # Optional: absent only for caches written by older CLIs.
     email: str | None = None
 
 

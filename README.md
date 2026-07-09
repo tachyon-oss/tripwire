@@ -45,7 +45,7 @@ Then `/tripwire:init` for guided setup, or just ask ("help me plant a canary",
 
 ## Canary types
 
-Five released types, in two families:
+Six released types, in two families:
 
 - **Provider credentials** — inert real-looking secrets: `aws.access_key`,
   `github.token`.
@@ -66,4 +66,4 @@ exposes the same setting as its `server` option.
 
 ## License
 
-Not yet chosen — see [`LICENSE`](LICENSE) before publishing.
+MIT — see [`LICENSE`](LICENSE). Copyright (c) 2026 Tachyon International Inc.
