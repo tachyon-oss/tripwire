@@ -1,6 +1,6 @@
 {
   "name": "@tachyonhq/tripwire",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Tripwire canary client — create and manage security canaries from the command line.",
   "license": "MIT",
   "private": false,

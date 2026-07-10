@@ -19,9 +19,7 @@ import {
   downloadWithRetry,
   extractZip,
   filenameFromDisposition,
-  runBundleCreate,
   runBundleDownload,
-  runBundleShow,
 } from "../src/commands/bundle.js";
 import { CredentialStore, NoCredentialsError } from "../src/config/credentials.js";
 import { buildProgram, Session } from "../src/index.js";
@@ -375,41 +373,47 @@ describe("downloadWithRetry (409 bundle_preparing)", () => {
 
 describe("bundle error mapping", () => {
   it("maps a 404 to a clear not-found message", async () => {
+    muteStderr();
     await expect(
-      runBundleShow(makeSession(errorFetch(404, "bundle_not_found")), "b1", {}),
+      runBundleDownload(makeSession(errorFetch(404, "bundle_not_found")), "b1", {}),
     ).rejects.toThrow(/bundle not found/);
   });
 
   it("maps a 410 to a clear revoked/expired message", async () => {
+    muteStderr();
     await expect(
-      runBundleShow(makeSession(errorFetch(410, "revoked")), "b1", {}),
+      runBundleDownload(makeSession(errorFetch(410, "revoked")), "b1", {}),
     ).rejects.toThrow(/revoked/);
   });
 
   it("does not recommend a nonexistent flag when browser verification is required", async () => {
+    muteStderr();
+    // The no-id path issues a bundle first; a challenge_failed there surfaces the
+    // browser-verification message (not a nonexistent CLI flag).
     await expect(
-      runBundleCreate(makeSession(errorFetch(400, "challenge_failed"))),
+      runBundleDownload(makeSession(errorFetch(400, "challenge_failed")), undefined, {}),
     ).rejects.toThrow(
       "bundle creation requires browser verification; download it from https://tripwire.so.",
     );
   });
 
   it("reports a genuine network failure as a network error, NOT bundle-not-found", async () => {
+    muteStderr();
     const netFail: typeof fetch = async () => {
       throw new Error("ECONNREFUSED");
     };
-    await expect(runBundleShow(makeSession(netFail), "b1", {})).rejects.toThrow(/cannot reach/);
-    await expect(runBundleShow(makeSession(netFail), "b1", {})).rejects.not.toThrow(
+    await expect(runBundleDownload(makeSession(netFail), "b1", {})).rejects.toThrow(/cannot reach/);
+    await expect(runBundleDownload(makeSession(netFail), "b1", {})).rejects.not.toThrow(
       /bundle not found/,
     );
   });
 });
 
-describe("bundle commands require login", () => {
+describe("bundle download requires login", () => {
   it("throws NoCredentialsError before making any request", async () => {
     const fetchSpy = vi.fn();
     const session = makeSession(fetchSpy as unknown as typeof fetch, { loggedIn: false });
-    await expect(runBundleShow(session, "b1", {})).rejects.toBeInstanceOf(NoCredentialsError);
+    await expect(runBundleDownload(session, "b1", {})).rejects.toBeInstanceOf(NoCredentialsError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
@@ -421,11 +425,11 @@ describe("bundle command wiring", () => {
     return group;
   }
 
-  it("registers the four bundle subcommands", () => {
+  it("registers only the download subcommand", () => {
     const names = bundleGroup()
       .commands.map((c) => c.name())
       .sort();
-    expect(names).toEqual(["contents", "create", "download", "show"]);
+    expect(names).toEqual(["download"]);
   });
 
   it("download takes -o/--output and --zip, an OPTIONAL id, and NO --template", () => {
@@ -436,39 +440,5 @@ describe("bundle command wiring", () => {
     expect(longs).not.toContain("--template");
     // The `id` positional is optional (bare `bundle download` auto-creates).
     expect(download?.registeredArguments.map((a) => a.required)).toEqual([false]);
-  });
-
-  it("create exposes no user-facing options (no --email/--turnstile-token/--template)", () => {
-    const create = bundleGroup().commands.find((c) => c.name() === "create");
-    const longs = (create?.options.map((o) => o.long) ?? []).filter((l) => l !== "--help");
-    expect(longs).toEqual([]);
-  });
-});
-
-describe("runBundleCreate request body", () => {
-  /** A fake `fetch` that records the POSTed JSON body and returns a create result. */
-  function createFetch(): { fetchImpl: typeof fetch; body: () => Record<string, unknown> | undefined } {
-    let captured: Record<string, unknown> | undefined;
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      const raw = init?.body;
-      captured = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : undefined;
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        text: async () =>
-          JSON.stringify({ status: "ready", bundle_id: "b_new", expires_at: "2026-01-01T00:00:00Z" }),
-        arrayBuffer: async () => new ArrayBuffer(0),
-      } as unknown as Response;
-    }) as typeof fetch;
-    return { fetchImpl, body: () => captured };
-  }
-
-  it("sends an EMPTY body — no email, turnstile_token, or template_id", async () => {
-    muteStderr();
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const { fetchImpl, body } = createFetch();
-    await runBundleCreate(makeSession(fetchImpl));
-    expect(body()).toEqual({});
   });
 });

@@ -1,6 +1,6 @@
 /**
- * Shared human-format helpers: the identity line (whoami == first line of
- * status) and canary-row rendering used by status / list / show.
+ * Shared human-format helpers: the identity line (the first line of `status`)
+ * and canary-row rendering used by status / list / show.
  */
 import type { Credentials } from "../config/credentials.js";
 import { dottedForWire } from "../types/registry.js";
@@ -19,9 +19,8 @@ export interface CanarySummary {
 
 /**
  * The identity line: `user_id  email  server`. `email` is shown when present;
- * `server` only for a non-default (self-hosted / test) target, matching the
- * Python `whoami`. This single line is both `whoami` and the first line of
- * `status`.
+ * `server` only for a non-default (self-hosted / test) target. This single line
+ * is the first line of `status`.
  */
 export function identityLine(creds: Credentials): string {
   const parts = [creds.user_id];

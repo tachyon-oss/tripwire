@@ -32,27 +32,20 @@ Login caches a token at `~/.config/tripwire/credentials.json` (honoring
 
 ## Grammar
 
-Noun-first: one object (`canary`), closed verbs over an open type catalog.
+Noun-first: objects (`canary`, `bundle`) with closed verbs over an open type
+catalog.
 
 ```
 tripwire login [--email <addr>]
 tripwire logout
-tripwire whoami
 tripwire status [--watch] [--json]
-tripwire api <METHOD> <path> [body] [--json]
 
-tripwire canary create <type> [--note S] [--expires D] [-o <file>]
+tripwire canary create <type> [--note S] [-o <file>]
 tripwire canary list [--type T] [--fired] [--json]
 tripwire canary show <id> [--json]
-tripwire canary disarm <id>
 tripwire canary delete <id>
-tripwire canary types [<type>] [--json]
-tripwire canary api <METHOD> <path> [body] [--json]
 
 tripwire bundle download [<id>] [-o <path>] [--zip]
-tripwire bundle show <id> [--json]
-tripwire bundle contents <id> [--json]
-tripwire bundle create
 ```
 
 Single canonical names only — there are no command aliases and no back-compat
@@ -79,8 +72,8 @@ is verbatim server truth (snake ids), while human tables show the dotted ids.
 The last two rows are AWS placements: CLI sugar that mints an `aws.access_key`
 and renders it straight into a real AWS config format (see below).
 
-Run `tripwire canary types` for the full catalog and `tripwire canary types
-<type>` for detail.
+Run `tripwire canary create --help` to see the full list of types you can
+create.
 
 ## AWS placements
 
@@ -99,9 +92,6 @@ tripwire canary create aws.credentials -o ~/.aws/credentials
 - `aws.profile` renders a `[profile <name>]` block for `~/.aws/config`.
 - `aws.credentials` renders a `[<name>]` block for `~/.aws/credentials`.
 
-Placements appear in `tripwire canary types`, nested under `aws.access_key`, and
-`tripwire canary types aws.profile` explains what they create and render.
-
 Delivery contract:
 
 - **Default:** only the rendered block goes to **stdout** (with a leading and
@@ -117,12 +107,12 @@ but is **never** written into the config file.
 
 ## Scripting
 
-Every read command takes `--json`. For anything the porcelain does not cover,
-use the authenticated passthrough:
+Every read command takes `--json`, which emits verbatim server truth (snake
+type ids) for piping into `jq` and friends:
 
 ```bash
-tripwire api GET /canary --json
-tripwire api POST /canary '{"type":"aws_access_key"}'
+tripwire canary list --json
+tripwire canary show <id> --json
 ```
 
 ## Development

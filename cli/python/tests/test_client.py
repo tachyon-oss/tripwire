@@ -41,9 +41,9 @@ def test_empty_body_returns_empty_dict():
         return httpx.Response(200, content=b"")
 
     client = _client(handler)
-    assert client.deactivate_canary("can_1") == {}
-    assert seen["request"].method == "POST"
-    assert str(seen["request"].url) == "https://api.example/canary/can_1/deactivate"
+    assert client.delete_canary("can_1") == {}
+    assert seen["request"].method == "DELETE"
+    assert str(seen["request"].url) == "https://api.example/canary/can_1"
 
 
 def test_post_sends_json_body_and_content_type():
@@ -257,3 +257,59 @@ def test_default_client_uses_a_short_connect_timeout():
         assert client._client.timeout.read == 10.0
     finally:
         client.close()
+
+
+# --- bundle -----------------------------------------------------------------
+
+
+def test_create_bundle_posts_body():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(200, json={"status": "ready", "bundle_id": "b_1"})
+
+    result = _client(handler, token="t").create_bundle({})
+
+    assert result == {"status": "ready", "bundle_id": "b_1"}
+    req = seen["request"]
+    assert req.method == "POST"
+    assert str(req.url) == "https://api.example/bundles"
+    assert json.loads(req.content) == {}
+
+
+def test_download_bundle_returns_headers_and_bytes():
+    seen: dict = {}
+    zip_bytes = b"PK\x03\x04 not-a-real-zip-but-binary"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["request"] = request
+        return httpx.Response(
+            200,
+            content=zip_bytes,
+            headers={"content-disposition": 'attachment; filename="kit.zip"'},
+        )
+
+    headers, buffer = _client(handler, token="t").download_bundle("b_1")
+
+    assert buffer == zip_bytes
+    assert headers.get("content-disposition") == 'attachment; filename="kit.zip"'
+    req = seen["request"]
+    assert req.method == "POST"
+    assert str(req.url) == "https://api.example/bundles/b_1"
+
+
+def test_download_bundle_raises_api_error_with_json_detail():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "bundle_not_found"})
+
+    with pytest.raises(ApiError) as exc:
+        _client(handler, token="t").download_bundle("b_missing")
+    assert exc.value.status == 404
+    assert exc.value.detail == "bundle_not_found"
+
+
+def test_client_has_no_deactivate_method():
+    # `canary disarm`/deactivate was removed from the CLI surface, so the client
+    # no longer exposes it.
+    assert not hasattr(ApiClient, "deactivate_canary")

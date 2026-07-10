@@ -165,3 +165,20 @@ export function dottedForWire(wire: string): string {
   const entry = WIRE_LOOKUP.get(wire.toLowerCase());
   return entry ? entry.id : wire;
 }
+
+/** Human labels for wire types, for the bundle placement table. */
+const WIRE_LABELS: Record<string, string> = {
+  aws_access_key: "AWS access key",
+  github_pat: "GitHub token",
+  anthropic_api_key: "Anthropic API key",
+  postgres_login: "Postgres login",
+  web_login_credential: "web login",
+  browser_session_cookie: "browser cookie",
+  kubernetes_kubeconfig: "Kubernetes kubeconfig",
+  dns_label: "DNS record",
+};
+
+/** Human label for a wire type; falls back to the dotted id, then the raw wire. */
+export function labelForWire(wire: string): string {
+  return WIRE_LABELS[wire.trim().toLowerCase()] ?? dottedForWire(wire);
+}

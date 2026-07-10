@@ -1,8 +1,9 @@
 /**
- * Bundle commands: `download` (primary), `show`, `contents`, `create`.
+ * Bundle command: `download`. With no id it issues a fresh bundle for the
+ * logged-in user first, then downloads and extracts it.
  *
  * The bundle endpoints are PUBLIC on the server (no auth), but the CLI still
- * requires login for uniformity: every command resolves `session.authedClient()`
+ * requires login for uniformity: `download` resolves `session.authedClient()`
  * first, which throws `NoCredentialsError` (the standard "run `tripwire login`"
  * message + nonzero exit) BEFORE any request is made. The cached token is
  * attached to the requests too — the endpoints ignore it, so behavior matches
@@ -21,8 +22,9 @@ import { unzipSync } from "fflate";
 
 import type { ApiClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";
+import { labelForWire } from "../types/registry.js";
 import { CliError } from "../util/errors.js";
-import { err, out, outRaw, printJson } from "../util/io.js";
+import { err, outRaw } from "../util/io.js";
 import type { Session } from "../util/session.js";
 
 /** Backoff schedule (ms) between download retries while a bundle is preparing. */
@@ -197,15 +199,26 @@ export async function runBundleDownload(
     // template are both chosen server-side (no email / turnstile_token / template).
     let bundleId = id;
     if (!bundleId) {
+      err("Setting up your decoy…");
       const created = (await client.createBundle({})) as { bundle_id?: string };
       if (!created.bundle_id) {
         throw new CliError("bundle creation did not return an id; nothing to download.");
       }
       bundleId = created.bundle_id;
-      err(`created bundle ${bundleId} for you; downloading…`);
     }
 
-    const { headers, buffer } = await downloadWithRetry(client, bundleId);
+    let result: Awaited<ReturnType<typeof downloadWithRetry>>;
+    try {
+      result = await downloadWithRetry(client, bundleId);
+    } catch (error) {
+      // The bundle exists on the server; surface its id so a retry skips
+      // re-provisioning. Only useful on the auto-create path (no id given).
+      if (id === undefined) {
+        err(`if this keeps failing, retry with: tripwire bundle download ${bundleId}`);
+      }
+      throw error;
+    }
+    const { headers, buffer } = result;
     const filename =
       filenameFromDisposition(headers.get("content-disposition")) ?? `${bundleId}.zip`;
     // `<name>` = the filename without its `.zip` suffix (fallback: bundle id).
@@ -253,90 +266,46 @@ export async function runBundleDownload(
       }
     }
     mkdirSync(dir, { recursive: true, mode: 0o700 }); // holds planted credentials
-    const { written, skipped } = extractZip(buffer, dir);
+    const { skipped } = extractZip(buffer, dir);
     for (const bad of skipped) err(`skipped unsafe zip entry: ${bad}`);
-    err(`extracted ${written} files → ${displayPath(dir)}/`);
+
+    // Show what is planted, and where. Best-effort: the decoy is already on disk,
+    // so a metadata hiccup must not fail the command.
+    let placements: Record<string, string[]> = {};
+    try {
+      const info = (await client.getBundle(bundleId)) as {
+        placements?: Record<string, string[]>;
+      };
+      placements = info.placements ?? {};
+    } catch {
+      // ignore — show the armed summary without the placement table
+    }
+    renderArmed(dir, placements);
   });
 }
 
-export interface BundleShowOptions {
-  json?: boolean;
+/** Human labels for the credentials planted in one file (deduped, comma-joined). */
+function credentialLabels(entries: string[]): string {
+  const labels = entries.map((entry) => labelForWire(entry.split("/")[0] ?? entry));
+  return [...new Set(labels)].join(", ");
 }
 
-interface BundleInfo {
-  status?: string;
-  expires_at?: string;
-  placements?: Record<string, string[]>;
-}
-
-export async function runBundleShow(
-  session: Session,
-  id: string,
-  opts: BundleShowOptions,
-): Promise<void> {
-  const client = session.authedClient();
-  const info = (await withBundleErrors(() => client.getBundle(id))) as BundleInfo;
-  if (opts.json) {
-    printJson(info);
-    return;
-  }
-  out(`status:   ${info.status ?? "unknown"}`);
-  out(`expires:  ${info.expires_at ?? "unknown"}`);
-  const placements = info.placements ?? {};
+/**
+ * The post-extract "armed" summary: the decoy is planted, here is what is
+ * watching and where each trap sits, and the one thing to do next. All on
+ * stderr so stdout stays clean for piping.
+ */
+function renderArmed(dir: string, placements: Record<string, string[]>): void {
+  err(`✓ Armed. Decoy project in ${displayPath(dir)}/`);
   const files = Object.keys(placements);
-  if (files.length === 0) {
-    out("placements: (none yet — populated on first download)");
-    return;
+  if (files.length > 0) {
+    const width = Math.max(...files.map((f) => f.length));
+    err("");
+    err("  What's watching:");
+    for (const file of files) {
+      err(`    ${file.padEnd(width)}  ${credentialLabels(placements[file] ?? [])}`);
+    }
   }
-  out("placements:");
-  for (const file of files) {
-    out(`  ${file}`);
-    for (const entry of placements[file] ?? []) out(`    ${entry}`);
-  }
-}
-
-export interface BundleContentsOptions {
-  json?: boolean;
-}
-
-interface BundleContents {
-  template_id?: string;
-  template_version?: string;
-  files?: Array<{ path: string; size: number; content?: string }>;
-}
-
-export async function runBundleContents(
-  session: Session,
-  id: string,
-  opts: BundleContentsOptions,
-): Promise<void> {
-  const client = session.authedClient();
-  const contents = (await withBundleErrors(() => client.bundleContents(id))) as BundleContents;
-  if (opts.json) {
-    printJson(contents);
-    return;
-  }
-  out(`template: ${contents.template_id ?? "unknown"} @ ${contents.template_version ?? "?"}`);
-  const files = contents.files ?? [];
-  out(`files (${files.length}):`);
-  for (const file of files) out(`  ${file.path}  (${file.size} bytes)`);
-}
-
-interface BundleCreateResult {
-  bundle_id?: string;
-  expires_at?: string;
-  status?: string;
-}
-
-export async function runBundleCreate(session: Session): Promise<void> {
-  const client = session.authedClient();
-  // The CLI is always authenticated, so the backend issues the bundle for the
-  // logged-in user. The request body is empty: no email, turnstile_token, or
-  // template_id (template selection is internal — the server picks).
-  const result = (await withBundleErrors(() => client.createBundle({}))) as BundleCreateResult;
-  out(`bundle_id:  ${result.bundle_id ?? "unknown"}`);
-  out(`expires:    ${result.expires_at ?? "unknown"}`);
-  if (result.bundle_id) {
-    err(`download it with: tripwire bundle download ${result.bundle_id}`);
-  }
+  err("");
+  err("  Plant it where an intruder would look. If a credential inside is ever used, you get an alert.");
 }

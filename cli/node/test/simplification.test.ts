@@ -23,7 +23,20 @@ describe("removed commands", () => {
 
   it("exposes exactly the canonical canary subcommands", () => {
     const names = canaryGroup().commands.map((c) => c.name()).sort();
-    expect(names).toEqual(["api", "create", "delete", "disarm", "list", "show", "types"]);
+    expect(names).toEqual(["create", "delete", "list", "show"]);
+  });
+
+  it("has no disarm, types, or api subcommand", () => {
+    const names = canaryGroup().commands.map((c) => c.name());
+    expect(names).not.toContain("disarm");
+    expect(names).not.toContain("types");
+    expect(names).not.toContain("api");
+  });
+
+  it("has no top-level whoami or api command", () => {
+    const top = program().commands.map((c) => c.name());
+    expect(top).not.toContain("whoami");
+    expect(top).not.toContain("api");
   });
 });
 
@@ -46,13 +59,13 @@ describe("removed back-compat flags", () => {
     const create = canaryGroup().commands.find((c) => c.name() === "create");
     const longs = create?.options.map((o) => o.long) ?? [];
     expect(longs).not.toContain("--type");
-    // The flags that remain are present; --in (unsupported) and --name
-    // (the backend now generates the placement name) are gone.
+    // Only --note and --output remain. --in (unsupported), --name (the backend
+    // generates the placement name), and --expires are gone.
     expect(longs).toContain("--note");
-    expect(longs).toContain("--expires");
     expect(longs).toContain("--output");
     expect(longs).not.toContain("--in");
     expect(longs).not.toContain("--name");
+    expect(longs).not.toContain("--expires");
   });
 });
 

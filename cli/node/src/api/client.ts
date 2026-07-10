@@ -171,22 +171,15 @@ export class ApiClient {
     return this.request("GET", `/canary/${encodeURIComponent(id)}`);
   }
 
-  deactivateCanary(id: string): Promise<unknown> {
-    return this.request("POST", `/canary/${encodeURIComponent(id)}/deactivate`);
-  }
-
   deleteCanary(id: string): Promise<unknown> {
     return this.request("DELETE", `/canary/${encodeURIComponent(id)}`);
   }
 
   // ----- bundle (public server endpoints; the CLI still requires login) -----
 
+  /** Bundle metadata, including the `placements` map (what is planted, and where). */
   getBundle(id: string): Promise<Record<string, unknown>> {
     return this.request("GET", `/bundles/${encodeURIComponent(id)}`);
-  }
-
-  bundleContents(id: string): Promise<Record<string, unknown>> {
-    return this.request("POST", `/bundles/${encodeURIComponent(id)}/contents`);
   }
 
   createBundle(body: Record<string, unknown>): Promise<Record<string, unknown>> {

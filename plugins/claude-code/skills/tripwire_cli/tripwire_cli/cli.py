@@ -1,15 +1,13 @@
 """Command-line client for Tripwire canaries.
 
-Commands:
-  tripwire login                     log in (email-code) and cache a token
-  tripwire logout                    forget the cached token
-  tripwire whoami                    print the cached identity
-  tripwire canary list               list your canaries (summary only)
-  tripwire canary show <id>          show one canary summary
-  tripwire canary create --type ...  create a canary; its credential is
-                                     returned once, in this response
-  tripwire canary deactivate <id>    deactivate a canary
-  tripwire canary delete <id>        delete a canary
+Noun-first grammar (single canonical names only; no aliases, no back-compat):
+
+  tripwire login | logout | status
+  tripwire canary create <type> [--note <s>] [-o <file>]
+  tripwire canary list [--type <t>] [--fired] [--json]
+  tripwire canary show <id> [--json]
+  tripwire canary delete <id>
+  tripwire bundle download [<id>] [-o <path>] [--zip]
 
 `login` does not take a server flag. The server is resolved as
 $TRIPWIRE_SERVER, then the last-used cached server, then the default; set
@@ -19,55 +17,24 @@ $TRIPWIRE_SERVER to point at a self-hosted or test server.
 from __future__ import annotations
 
 import functools
+import io
 import json
 import os
-import subprocess
+import re
+import time
+import urllib.parse
+import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import click
 
 from tripwire_cli import credentials
-from tripwire_cli.client import CREATE_READ_TIMEOUT, ApiClient, ApiError
+from tripwire_cli.client import ApiClient, ApiError
 
-
-def _git_user_email() -> str | None:
-    """Best-effort default email from ``git config user.email``; ``None`` if
-    git is absent or unset. Shown to the user as a default, never used
-    silently."""
-    try:
-        result = subprocess.run(
-            ["git", "config", "user.email"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    email = result.stdout.strip()
-    return email or None
-
-DEFAULT_SERVER = "https://tripwire.so/api/v1"
-
-# The canary types the API's POST /canary accepts. The provider-minted types
-# (aws/github) provision on create; the request-path types
-# (web_login_credential, browser_session_cookie, postgres_login,
-# kubernetes_kubeconfig) inline their artifact fields directly in the create
-# response. The CLI prints the server JSON verbatim, so new inlined fields flow
-# through unchanged.
-CANARY_TYPES = [
-    "aws_access_key",
-    "github_pat",
-    "web_login_credential",
-    "browser_session_cookie",
-    "postgres_login",
-    "kubernetes_kubeconfig",
-]
-
-# How long the create read timeout may run, in seconds. Must stay above the
-# server's synchronous create wait window (180s) so the client never abandons a
-# request whose one-time credential reveal the server is still preparing.
-CREATE_TIMEOUT_ENV = "TRIPWIRE_CREATE_TIMEOUT"
+DEFAULT_SERVER = credentials.DEFAULT_SERVER
 
 # How many times to re-prompt for the emailed code before giving up. Re-prompts
 # never re-call /auth/login/start (which is rate-limited); they re-submit a new
@@ -75,18 +42,194 @@ CREATE_TIMEOUT_ENV = "TRIPWIRE_CREATE_TIMEOUT"
 EMAIL_CODE_ATTEMPTS = 3
 
 
+# --- type registry ----------------------------------------------------------
+#
+# LEFT of the dot = provider/surface namespace; RIGHT of the dot = the artifact
+# you receive. The wire speaks snake (`POST /canary {"type":"aws_access_key"}`);
+# the CLI accepts ONLY the canonical dotted ids as user input and TRANSLATES to
+# the snake ``wire`` id on the way out, mapping snake ids the server returns back
+# to dotted for display. `--json` output stays verbatim server truth (snake).
+
+# Read-timeout floor for a synchronous create, in seconds. Must stay above the
+# server's ~180s create wait window so the client never abandons a create whose
+# one-time reveal the server is still preparing.
+DEFAULT_WAIT_SECONDS = 240.0
+
+
+@dataclass(frozen=True)
+class TypeEntry:
+    # Dotted canonical id, e.g. ``aws.access_key`` -- the only accepted input id.
+    id: str
+    # Snake wire id sent to ``POST /canary``, e.g. ``aws_access_key``.
+    wire: str
+    # The output keys the create response inlines for this type; used to render
+    # the human create output. ``--json`` passes server truth through untouched.
+    output_fields: list[str]
+    # Only ``customer`` types appear in create input.
+    visibility: str
+    wait_seconds: float = DEFAULT_WAIT_SECONDS
+
+
+REGISTRY: list[TypeEntry] = [
+    TypeEntry("aws.access_key", "aws_access_key",
+              ["access_key_id", "secret_access_key", "region"], "customer"),
+    TypeEntry("github.token", "github_pat", ["raw_token"], "customer"),
+    TypeEntry("anthropic.api_key", "anthropic_api_key", ["raw_key"], "unreleased"),
+    TypeEntry("database.credentials", "postgres_login",
+              ["database_url", "url", "host", "port", "database", "username",
+               "password", "sslmode"], "customer"),
+    TypeEntry("web.login", "web_login_credential",
+              ["url", "username", "password"], "customer"),
+    TypeEntry("web.cookie", "browser_session_cookie",
+              ["url", "cookie_name", "cookie_value", "cookie_domain",
+               "cookie_path"], "customer"),
+    TypeEntry("k8s.config", "kubernetes_kubeconfig",
+              ["server", "cluster_name", "user_name", "bearer_token", "token",
+               "kubeconfig"], "customer"),
+    # Internal type, hidden from the CLI and from create input.
+    TypeEntry("dns.label", "dns_label", ["fqdn", "qtype"], "internal"),
+]
+
+_INPUT_LOOKUP = {e.id: e for e in REGISTRY if e.visibility == "customer"}
+_WIRE_LOOKUP = {e.wire: e for e in REGISTRY}
+
+
+class UnknownTypeError(click.ClickException):
+    def __init__(self, given: str):
+        super().__init__(
+            f'unknown canary type "{given}". run '
+            "`tripwire canary create --help` to see the available types."
+        )
+
+
+def resolve_type(given: str) -> TypeEntry:
+    """Resolve a create-input type id. Only the canonical dotted ids are
+    accepted; an unknown id raises a friendly error."""
+    entry = _INPUT_LOOKUP.get(given.strip().lower())
+    if entry is None:
+        raise UnknownTypeError(given)
+    return entry
+
+
+def dotted_for_wire(wire: str) -> str:
+    """Dotted display id for a wire type, falling back to the wire value."""
+    entry = _WIRE_LOOKUP.get((wire or "").lower())
+    return entry.id if entry else wire
+
+
+def customer_type_ids() -> list[str]:
+    return [e.id for e in REGISTRY if e.visibility == "customer"]
+
+
+# --- AWS placements ---------------------------------------------------------
+#
+# CLI-layer sugar over ``aws.access_key``: a placement mints the underlying
+# canary, then renders the returned one-time credential into a real config-file
+# block. The stored row is just the underlying type; the placement affects only
+# create-time output. The profile/label name is generated by the backend.
+
+
+def render_aws_profile(name: str, access_key_id: str, secret: str, region: str) -> str:
+    """``[profile <name>]`` block for ``~/.aws/config`` (with region if present)."""
+    lines = [
+        f"[profile {name}]",
+        f"aws_access_key_id = {access_key_id}",
+        f"aws_secret_access_key = {secret}",
+    ]
+    if region:
+        lines.append(f"region = {region}")
+    return "\n".join(lines)
+
+
+def render_aws_credentials(name: str, access_key_id: str, secret: str, region: str) -> str:
+    """``[<name>]`` block for ``~/.aws/credentials`` (no region line)."""
+    return "\n".join([
+        f"[{name}]",
+        f"aws_access_key_id = {access_key_id}",
+        f"aws_secret_access_key = {secret}",
+    ])
+
+
+@dataclass(frozen=True)
+class PlacementDef:
+    id: str
+    underlying_type: str
+    render: Callable[[str, str, str, str], str]
+
+
+PLACEMENTS: list[PlacementDef] = [
+    PlacementDef("aws.profile", "aws.access_key", render_aws_profile),
+    PlacementDef("aws.credentials", "aws.access_key", render_aws_credentials),
+]
+
+_PLACEMENT_LOOKUP = {p.id: p for p in PLACEMENTS}
+
+
+def resolve_placement(given: str) -> PlacementDef | None:
+    return _PLACEMENT_LOOKUP.get(given.strip().lower())
+
+
+# The creatable ids (customer types + placements), for `create` help.
+CREATABLE_TYPES = customer_type_ids() + [p.id for p in PLACEMENTS]
+
+
+# --- format helpers ---------------------------------------------------------
+
+
+def _has_fired(canary: dict[str, Any]) -> bool:
+    return bool(canary.get("last_used_at"))
+
+
+def _armed_word(status: str | None) -> str:
+    if status == "active":
+        return "armed"
+    if status == "inactive":
+        return "disarmed"
+    return status or "unknown"
+
+
+def _identity_line(creds: credentials.Credentials) -> str:
+    parts = [creds.user_id]
+    if creds.email:
+        parts.append(creds.email)
+    # Surface the server only for a non-default (self-hosted / test) target.
+    if creds.server:
+        parts.append(creds.server)
+    return "  ".join(parts)
+
+
+def _canary_row(canary: dict[str, Any]) -> str:
+    dotted = dotted_for_wire(str(canary.get("type", "")))
+    if _has_fired(canary):
+        state = f"used {canary.get('last_used_at')}"
+    else:
+        state = _armed_word(canary.get("status"))
+    memo = f"  {canary['memo']}" if canary.get("memo") else ""
+    return f"  {canary.get('id')}  {dotted}  {state}{memo}"
+
+
+# --- io ---------------------------------------------------------------------
+
+
+def _out(line: str = "") -> None:
+    click.echo(line)
+
+
+def _err(line: str = "") -> None:
+    click.echo(line, err=True)
+
+
+def _print_json(value: Any) -> None:
+    click.echo(json.dumps(value, indent=2))
+
+
+# --- session ----------------------------------------------------------------
+
+
 def resolve_login_server(env: dict[str, str], cached: str | None) -> str:
     """Server URL for `login`: env override, else the last-used cached server,
     else the default."""
     return env.get("TRIPWIRE_SERVER") or cached or DEFAULT_SERVER
-
-
-def build_create_payload(*, canary_type: str, memo: str | None = None) -> dict[str, Any]:
-    """Build the create request body from the supported flags."""
-    payload: dict[str, Any] = {"type": canary_type}
-    if memo:
-        payload["memo"] = memo
-    return payload
 
 
 class Context:
@@ -98,25 +241,18 @@ class Context:
         self,
         store: credentials.CredentialStore | None = None,
         client_factory: Callable[[str, str | None], ApiClient] | None = None,
-        git_email: Callable[[], str | None] | None = None,
     ):
         self.store = store or credentials.default_store()
         self._client_factory = client_factory or (
             lambda server, token=None: ApiClient(base_url=server, token=token)
         )
-        # Injectable so tests can supply a fake; defaults to `git config
-        # user.email`.
-        self._git_email = git_email or _git_user_email
-
-    def git_email(self) -> str | None:
-        return self._git_email()
 
     def client(self, server: str, token: str | None = None) -> ApiClient:
         return self._client_factory(server, token)
 
     def authed_client(self) -> ApiClient:
         creds = self.store.load()
-        return self.client(creds.server, creds.access_token)
+        return self.client(creds.resolved_server(), creds.access_token)
 
     def cached_server(self) -> str | None:
         try:
@@ -124,9 +260,19 @@ class Context:
         except credentials.NoCredentialsError:
             return None
 
+    def cached_login_email(self) -> str | None:
+        """The email from a prior login (the local cache) as the prompt default,
+        else None. Never derived from git or any other local identity."""
+        try:
+            return self.store.load().email
+        except credentials.NoCredentialsError:
+            return None
 
-# Substrings the server may return on a 401 when the cached token is malformed
-# or undecodable. These are opaque to users, so we map them to a plain "session
+
+# --- errors -----------------------------------------------------------------
+
+# Substrings the server leaks on a 401 when the cached token is malformed or
+# undecodable. These are opaque to users, so we map them to a plain "session
 # expired" message instead of echoing the raw detail.
 _EXPIRED_SESSION_MARKERS = (
     "invalid header padding",
@@ -165,49 +311,36 @@ def _handle_errors(func):
     return wrapper
 
 
-def _echo_json(value: Any) -> None:
-    click.echo(json.dumps(value, indent=2))
+# --- top-level group --------------------------------------------------------
 
 
 @click.group()
 @click.version_option(package_name="tripwire-cli", prog_name="tripwire")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
-    """Tripwire canary client."""
+    """Create and manage Tripwire security canaries."""
     ctx.obj = ctx.obj or Context()
 
 
+# --- auth / session ---------------------------------------------------------
+
+
 @cli.command()
-@click.option(
-    "--email",
-    help="email for passwordless login (skips the prompt; for headless/CI use)",
-)
-@click.option(
-    "--code",
-    help=(
-        "6-digit code for passwordless login (skips the code prompt; pair with "
-        "--email for a non-interactive exchange of an already-sent code)"
-    ),
-)
+@click.option("--email", help="email address to sign in with")
 @click.pass_obj
 @_handle_errors
-def login(
-    obj: Context,
-    email: str | None,
-    code: str | None,
-) -> None:
-    """Log in and cache a token.
+def login(obj: Context, email: str | None) -> None:
+    """Log in with an emailed sign-in code and cache a token.
 
-    Uses passwordless email-code login. For headless/CI use, pass --email (and
-    optionally --code) to skip the interactive prompts. With both --email and
-    --code, a code that was already emailed is exchanged directly without
-    re-sending one or prompting.
+    Sends a 6-digit code to your email (`--email`, else the address from your
+    last login, else prompted) and asks you to enter it. Login is interactive:
+    there is no password login and no non-interactive code flag.
     """
     server = resolve_login_server(dict(os.environ), obj.cached_server())
     client = obj.client(server)
-    creds = _email_login(client, server, obj.git_email(), email=email, code=code)
-    path = obj.store.save(creds)
-    click.echo(f"logged in as {creds.user_id}; token cached at {path}")
+    creds = _email_login(client, server, obj.cached_login_email(), email=email)
+    obj.store.save(creds)
+    _out(f"logged in as {creds.user_id}")
 
 
 def _email_login(
@@ -216,30 +349,17 @@ def _email_login(
     default_email: str | None,
     *,
     email: str | None = None,
-    code: str | None = None,
 ) -> credentials.Credentials:
-    """Passwordless email-code login.
+    """Emailed-code login.
 
-    Interactive path (no ``code``): calls /auth/login/start once (it is
-    rate-limited), then prompts for the 6-digit code, re-prompting in-band on an
-    invalid/expired code without re-calling start.
-
-    Non-interactive path (``code`` supplied): exchanges that code directly and
-    does NOT call /auth/login/start, since the code was already emailed and
-    re-sending would burn the rate-limited start and invalidate the held code.
-
-    ``email`` (e.g. from ``--email``) skips the email prompt for headless/CI use.
+    Calls /auth/login/start once (it is rate-limited), then prompts for the
+    6-digit code, re-prompting in-band on an invalid/expired code without
+    re-calling start. ``email`` (e.g. from ``--email``) skips the email prompt.
     """
     email = email or click.prompt("email", default=default_email)
 
-    if code is not None:
-        # Headless: a code was supplied, so do not (re)send one. Exchange it
-        # directly; a single attempt, no prompt loop.
-        response = _exchange_code(client, email, code)
-        return _credentials_from_login(server, response, email=email)
-
     _start_email_login(client, email)
-    click.echo(f"sent a 6-digit sign-in code to {email}; check your inbox.")
+    _err(f"sent a 6-digit sign-in code to {email}; check your inbox.")
     last_error: ApiError | None = None
     for attempt in range(EMAIL_CODE_ATTEMPTS):
         entered = click.prompt("code")
@@ -250,10 +370,7 @@ def _email_login(
                 last_error = exc
                 remaining = EMAIL_CODE_ATTEMPTS - attempt - 1
                 if remaining:
-                    click.echo(
-                        f"invalid or expired code; {remaining} attempt(s) left.",
-                        err=True,
-                    )
+                    _err(f"invalid or expired code; {remaining} attempt(s) left.")
                 continue
             raise
         return _credentials_from_login(server, response, email=email)
@@ -295,11 +412,25 @@ def _exchange_code(client: ApiClient, email: str, code: str) -> dict[str, Any]:
 def _credentials_from_login(
     server: str, response: dict[str, Any], email: str | None = None
 ) -> credentials.Credentials:
+    # Validate the required fields rather than caching a broken, unusable token.
+    user_id = response.get("user_id")
+    access_token = response.get("access_token")
+    try:
+        expires_at = int(response["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        expires_at = None  # type: ignore[assignment]
+    if not user_id or not access_token or expires_at is None:
+        raise click.ClickException(
+            "the login response was malformed (missing "
+            "user_id/access_token/expires_at); run `tripwire login` again."
+        )
+    # Store the server only when it is a non-default (self-hosted / test) target,
+    # so a normal user's cache omits it.
     return credentials.Credentials(
-        server=server,
-        user_id=response["user_id"],
-        access_token=response["access_token"],
-        expires_at=int(response["expires_at"]),
+        server=None if server == DEFAULT_SERVER else server,
+        user_id=user_id,
+        access_token=access_token,
+        expires_at=expires_at,
         email=email,
     )
 
@@ -309,98 +440,165 @@ def _credentials_from_login(
 @_handle_errors
 def logout(obj: Context) -> None:
     """Forget the cached token."""
-    click.echo("cached token removed" if obj.store.clear() else "no cached token")
+    _out("cached token removed" if obj.store.clear() else "no cached token")
 
 
 @cli.command()
+@click.option("--watch", is_flag=True, help="re-poll and redraw every few seconds")
+@click.option("--json", "as_json", is_flag=True, help="emit verbatim server JSON")
 @click.pass_obj
 @_handle_errors
-def whoami(obj: Context) -> None:
-    """Print the cached identity."""
+def status(obj: Context, watch: bool, as_json: bool) -> None:
+    """Cross-object dashboard: identity, counts, fired-first canaries."""
+    if watch and as_json:
+        # Watch is a live human view; JSON is a one-shot machine read.
+        _err("note: --watch is ignored with --json.")
+        watch = False
+    if not watch:
+        _render_status_once(obj, as_json)
+        return
+    # Check auth once up front (fail fast if not logged in), then poll every 5s,
+    # clearing the screen between frames, until interrupted. A transient error
+    # between frames is tolerated: warn and keep polling rather than exiting.
+    obj.store.load()
+    while True:
+        click.echo("\x1b[2J\x1b[H", nl=False)
+        try:
+            _render_status_once(obj, False)
+        except Exception as exc:  # noqa: BLE001 - keep polling across transients
+            _err(f"(temporary error: {exc}; retrying in 5s...)")
+        time.sleep(5)
+
+
+def _render_status_once(obj: Context, as_json: bool) -> None:
     creds = obj.store.load()
-    click.echo(f"server:   {creds.server}")
-    click.echo(f"user_id:  {creds.user_id}")
-    if creds.email:
-        click.echo(f"email:    {creds.email}")
+    response = obj.authed_client().list_canaries()
+    if as_json:
+        _print_json(response)
+        return
+    canaries = response.get("canaries") or []
+    fired = [c for c in canaries if _has_fired(c)]
+    rest = [c for c in canaries if not _has_fired(c)]
+
+    _out(_identity_line(creds))
+    _out()
+    _out(f"{len(canaries)} canaries, {len(fired)} fired")
+
+    if not canaries:
+        _out()
+        _out("no canaries yet. create one with `tripwire canary create <type>`.")
+        return
+    if fired:
+        _out()
+        _out("FIRED")
+        for canary in fired:
+            _out(_canary_row(canary))
+    if rest:
+        _out()
+        _out("ARMED")
+        for canary in rest:
+            _out(_canary_row(canary))
+
+
+# --- canary group -----------------------------------------------------------
 
 
 @cli.group()
 def canary() -> None:
-    """Manage canaries."""
+    """Create and manage canaries."""
 
 
-@canary.command("list")
-@click.pass_obj
-@_handle_errors
-def canary_list(obj: Context) -> None:
-    """List the canaries you own (summary only)."""
-    _echo_json(obj.authed_client().list_canaries())
-
-
-@canary.command("show")
-@click.argument("canary_id")
-@click.pass_obj
-@_handle_errors
-def canary_show(obj: Context, canary_id: str) -> None:
-    """Show one canary summary (no credential)."""
-    _echo_json(obj.authed_client().get_canary(canary_id))
-
-
-@canary.command("create")
-@click.option(
-    "--type", "canary_type", type=click.Choice(CANARY_TYPES), required=True
-)
-@click.option("--memo", help="free-form note about this canary")
-@click.option(
-    "--timeout",
-    "timeout",
-    type=float,
-    default=None,
+@canary.command(
+    "create",
     help=(
-        "read timeout in seconds for this create "
-        f"(env {CREATE_TIMEOUT_ENV}; default 240). Must exceed the server's "
-        "~180s provisioning wait."
+        "Create a canary; the credential is shown once, at creation.\n\n"
+        "TYPE is one of: " + ", ".join(CREATABLE_TYPES) + "."
     ),
+)
+@click.argument("canary_type", metavar="TYPE", required=False)
+@click.option("--note", help="your own note to remember where you placed it")
+@click.option(
+    "-o", "--output", "output",
+    help="write the credential to a file instead of stdout",
 )
 @click.pass_obj
 @_handle_errors
 def canary_create(
-    obj: Context, canary_type: str, memo: str | None, timeout: float | None
+    obj: Context, canary_type: str | None, note: str | None, output: str | None
 ) -> None:
-    """Create a canary. The credential is returned once, in this response."""
-    read_timeout = _resolve_create_timeout(timeout, dict(os.environ))
-    payload = build_create_payload(canary_type=canary_type, memo=memo)
-    click.echo(
-        "creating the canary (usually a second or two; up to ~2 min while it "
-        "provisions).",
-        err=True,
-    )
+    if not canary_type:
+        raise click.ClickException(
+            "a canary type is required. run `tripwire canary create --help` for the list."
+        )
+    placement = resolve_placement(canary_type)
+    if placement is not None:
+        _run_placement_create(obj, placement, note, output)
+        return
+    _run_type_create(obj, resolve_type(canary_type), note, output)
+
+
+def _run_type_create(
+    obj: Context, entry: TypeEntry, note: str | None, output: str | None
+) -> None:
+    """Ordinary create: mint the canary and print only its credential fields."""
+    payload: dict[str, Any] = {"type": entry.wire}
+    if note:
+        payload["memo"] = note
+    result = _create_or_explain(obj, payload, entry.wait_seconds)
+    if output:
+        _write_json_reveal(result, output)
+        return
+    for name in entry.output_fields:
+        value = result.get(name)
+        if value is not None and value != "":
+            _out(f"{name}: {value}")
+
+
+def _run_placement_create(
+    obj: Context, placement: PlacementDef, note: str | None, output: str | None
+) -> None:
+    """Placement create: mint the underlying canary and render it into a block."""
+    entry = resolve_type(placement.underlying_type)
+    payload: dict[str, Any] = {"type": entry.wire}
+    if note:
+        payload["memo"] = note
+    result = _create_or_explain(obj, payload, entry.wait_seconds)
+
+    access_key_id = _str(result.get("access_key_id"))
+    secret = _str(result.get("secret_access_key"))
+    region = _str(result.get("region"))
+    if not access_key_id or not secret:
+        # Safety valve: the canary was minted but we cannot render the block.
+        # Never drop the one-time secret -- dump the raw response, then error.
+        _err("!! could not render the block; the canary was minted, raw response below.")
+        click.echo(json.dumps(result, indent=2))
+        raise click.ClickException(
+            "could not render the placement block; the raw response was printed above."
+        )
+
+    # The profile/label name is generated by the backend and returned as `name`.
+    name = _str(result.get("name")) or _str(result.get("id"))
+    block = placement.render(name, access_key_id, secret, region)
+    label = block.split("\n", 1)[0]
+
+    if output:
+        _deliver_to_file(block, output, label)
+    else:
+        _deliver_to_stdout(block)
+
+
+def _create_or_explain(
+    obj: Context, payload: dict[str, Any], wait_seconds: float
+) -> dict[str, Any]:
+    """Run POST /canary, translating the create-specific failures (a still-
+    provisioning orphan; a hard provisioning failure) into actionable messages."""
     try:
-        result = obj.authed_client().create_canary(payload, timeout=read_timeout)
+        return obj.authed_client().create_canary(payload, timeout=wait_seconds)
     except ApiError as exc:
         message = _create_error_message(exc)
         if message is None:
             raise
         raise click.ClickException(message) from exc
-    _echo_json(result)
-
-
-def _resolve_create_timeout(flag: float | None, env: dict[str, str]) -> float:
-    """Read timeout for create, in seconds: --timeout flag, else
-    ``TRIPWIRE_CREATE_TIMEOUT`` env, else ``CREATE_READ_TIMEOUT`` (240). Always
-    above the server's ~180s provisioning wait so the client never abandons a
-    create whose one-time reveal is still being prepared."""
-    if flag is not None:
-        return flag
-    raw = env.get(CREATE_TIMEOUT_ENV)
-    if not raw:
-        return CREATE_READ_TIMEOUT
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise click.ClickException(
-            f"invalid {CREATE_TIMEOUT_ENV}={raw!r}: must be a number of seconds"
-        ) from exc
 
 
 def _create_error_message(exc: ApiError) -> str | None:
@@ -408,27 +606,130 @@ def _create_error_message(exc: ApiError) -> str | None:
     to the generic error handler."""
     if exc.status == 429 and exc.detail == "canary_pending":
         return (
-            "canary is still provisioning, so its one-time credential reveal was "
-            "not returned in this response and cannot be recovered. creating "
-            "again would mint a second canary and trip the per-type quota; "
-            "instead, find this orphan with `tripwire canary list`, delete it "
-            "with `tripwire canary delete <id>`, then recreate."
+            "the canary is still being prepared, so its one-time credential was "
+            "not returned. creating again would make a second one; instead find "
+            "it with `tripwire canary list`, delete it with `tripwire canary "
+            "delete <id>`, then retry."
         )
     if exc.status == 502 and exc.detail == "provisioning_failed":
-        return (
-            "canary provisioning failed; nothing was issued. "
-            "try again, and if it persists contact support."
-        )
+        return "the canary could not be created; nothing was issued. please try again."
     return None
 
 
-@canary.command("deactivate")
-@click.argument("canary_id")
+def _deliver_to_stdout(block: str) -> None:
+    """Print the block to stdout with a leading + trailing newline, so `>>`/`>`
+    compose cleanly and never fuse a header."""
+    click.echo("\n" + block)
+
+
+def _deliver_to_file(block: str, output_path: str, label: str) -> None:
+    """Write the block to ``output_path`` (append-or-create, mode 0600), or fall
+    back to stdout with a loud warning if the write fails after the credential
+    was already minted."""
+    try:
+        mode0600 = _write_block(output_path, block)
+    except OSError as exc:
+        _err("")
+        _err(f"!! could not write to {output_path}: {exc}")
+        _err("!! the credential was already minted and is shown below - capture it now,")
+        _err("!! it will NOT be shown again.")
+        _deliver_to_stdout(block)
+        return
+    if mode0600:
+        _err(f"wrote {label} to {output_path} (mode 0600)")
+    else:
+        _err(
+            f"wrote {label} to {output_path}, but could not set mode 0600; "
+            f"tighten it yourself: chmod 600 {output_path}"
+        )
+
+
+def _write_block(path: str, block: str) -> bool:
+    """Write ``block`` (no trailing newline) to ``path`` -- create with parent
+    dirs, or append with a blank-line separator so blocks never fuse -- then
+    tighten to mode 0600. Returns whether the chmod succeeded."""
+    p = Path(path)
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"{block}\n")
+    else:
+        non_empty = p.stat().st_size > 0
+        with p.open("a") as handle:
+            handle.write(f"\n{block}\n" if non_empty else f"{block}\n")
+    try:
+        p.chmod(0o600)
+        return True
+    except OSError:
+        return False
+
+
+def _write_json_reveal(result: dict[str, Any], output_path: str) -> None:
+    """Write the full create JSON to ``output_path`` (mode 0600). If the write
+    fails, dump the JSON to stdout with a warning (post-mint safety valve); if
+    only the chmod fails, warn about perms without re-dumping the secret."""
+    text = json.dumps(result, indent=2) + "\n"
+    try:
+        with open(output_path, "w") as handle:
+            handle.write(text)
+    except OSError as exc:
+        _err(f"!! could not write to {output_path}: {exc}; the credential is below.")
+        click.echo(text, nl=False)
+        return
+    try:
+        os.chmod(output_path, 0o600)
+        _err(f"wrote {output_path}")
+    except OSError as exc:
+        _err(
+            f"wrote {output_path}, but could not set mode 0600 ({exc}); "
+            f"run: chmod 600 {output_path}"
+        )
+
+
+@canary.command("list")
+@click.option("--type", "type_filter", help="filter by type")
+@click.option("--fired", is_flag=True, help="only canaries that have fired")
+@click.option("--json", "as_json", is_flag=True, help="emit verbatim server JSON")
 @click.pass_obj
 @_handle_errors
-def canary_deactivate(obj: Context, canary_id: str) -> None:
-    """Deactivate a canary."""
-    _echo_json(obj.authed_client().deactivate_canary(canary_id))
+def canary_list(
+    obj: Context, type_filter: str | None, fired: bool, as_json: bool
+) -> None:
+    """List your canaries."""
+    response = obj.authed_client().list_canaries()
+    canaries = response.get("canaries") or []
+    if type_filter:
+        wire = resolve_type(type_filter).wire
+        canaries = [c for c in canaries if c.get("type") == wire]
+    if fired:
+        canaries = [c for c in canaries if _has_fired(c)]
+    if as_json:
+        # Verbatim server truth (filtered), snake types preserved for scripts.
+        _print_json({"canaries": canaries})
+        return
+    if not canaries:
+        _out("no canaries match.")
+        return
+    for canary_summary in canaries:
+        _out(_canary_row(canary_summary).lstrip())
+
+
+@canary.command("show")
+@click.argument("canary_id")
+@click.option("--json", "as_json", is_flag=True, help="emit verbatim server JSON")
+@click.pass_obj
+@_handle_errors
+def canary_show(obj: Context, canary_id: str, as_json: bool) -> None:
+    """Show one canary, including fire hits."""
+    canary_summary = obj.authed_client().get_canary(canary_id)
+    if as_json:
+        _print_json(canary_summary)
+        return
+    _out(_canary_row(canary_summary).lstrip())
+    if _has_fired(canary_summary):
+        _out(f"fired: last used {canary_summary.get('last_used_at')}")
+    else:
+        _out("fired: no hits yet")
+    _out(f"actions: tripwire canary delete {canary_id}")
 
 
 @canary.command("delete")
@@ -437,7 +738,247 @@ def canary_deactivate(obj: Context, canary_id: str) -> None:
 @_handle_errors
 def canary_delete(obj: Context, canary_id: str) -> None:
     """Delete a canary."""
-    _echo_json(obj.authed_client().delete_canary(canary_id))
+    _print_json(obj.authed_client().delete_canary(canary_id))
+
+
+# --- bundle group (public endpoints, but the CLI still requires login) ------
+
+
+@cli.group()
+def bundle() -> None:
+    """Download bait bundles."""
+
+
+# Backoff schedule (seconds) between download retries while a bundle is preparing.
+_RETRY_BACKOFF = [0.75, 1.5, 2.5]
+
+
+def download_with_retry(
+    client: ApiClient,
+    bundle_id: str,
+    *,
+    attempts: int | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[Any, bytes]:
+    """Download a bundle, retrying while the server reports
+    ``409 bundle_preparing``. Any other error propagates immediately. On
+    exhausted retries the last 409 propagates (mapped to a clear message)."""
+    if attempts is None:
+        attempts = len(_RETRY_BACKOFF) + 1
+    last_error: ApiError | None = None
+    for attempt in range(attempts):
+        try:
+            return client.download_bundle(bundle_id)
+        except ApiError as exc:
+            preparing = exc.status == 409 and exc.detail == "bundle_preparing"
+            if not preparing:
+                raise
+            last_error = exc
+            if attempt < attempts - 1:
+                sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
+    raise last_error if last_error is not None else ApiError(409, "bundle_preparing")
+
+
+def _decode_uri_component(value: str) -> str:
+    """Mirror JS ``decodeURIComponent``: raise on an invalid ``%XX`` or on
+    invalid UTF-8, so a malformed ``filename*`` falls through to the plain form."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        raise ValueError("invalid percent-encoding")
+    return urllib.parse.unquote(value, errors="strict")
+
+
+def _sanitize_filename(name: str) -> str:
+    return os.path.basename(name.replace("\\", "/"))
+
+
+def filename_from_disposition(value: str | None) -> str | None:
+    """Parse the download filename from a ``Content-Disposition`` header,
+    preferring the RFC 5987 ``filename*`` form. Returns the basename only (no
+    path parts), or ``None`` if none is present."""
+    if not value:
+        return None
+    extended = re.search(r"filename\*=(?:UTF-8'')?[\"']?([^\"';]+)", value, re.I)
+    if extended:
+        try:
+            return _sanitize_filename(_decode_uri_component(extended.group(1).strip()))
+        except (ValueError, UnicodeDecodeError):
+            # Malformed percent-encoding: fall through to the plain form, and
+            # ultimately to the caller's `${bundle_id}.zip` default.
+            pass
+    plain = re.search(r"filename=\"?([^\"';]+)\"?", value, re.I)
+    if plain:
+        return _sanitize_filename(plain.group(1).strip())
+    return None
+
+
+def _is_unsafe_entry(name: str, root: str) -> bool:
+    """True when a zip entry is absolute or escapes ``root`` via ``..``."""
+    if name.startswith("/") or os.path.isabs(name):
+        return True
+    target = os.path.realpath(os.path.join(root, name))
+    return not (target == root or target.startswith(root + os.sep))
+
+
+def extract_zip(buffer: bytes, directory: str) -> tuple[int, list[str]]:
+    """Extract a zip ``buffer`` into ``directory``, guarding against zip-slip:
+    any entry that is absolute or resolves outside the dir (``..``) is SKIPPED,
+    not written, even though the archive comes from our own server. Intermediate
+    dirs are created (0700); files are written 0600. Returns the count written
+    and the names skipped."""
+    root = os.path.realpath(directory)
+    skipped: list[str] = []
+    written = 0
+    with zipfile.ZipFile(io.BytesIO(buffer)) as archive:
+        for info in archive.infolist():
+            raw_name = info.filename
+            name = raw_name.replace("\\", "/")
+            if name.endswith("/"):
+                continue  # directory entry -- created implicitly below
+            if _is_unsafe_entry(name, root):
+                skipped.append(raw_name)
+                continue
+            target = os.path.realpath(os.path.join(root, name))
+            # The extracted files hold planted credentials: dirs 0700, files 0600.
+            os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(archive.read(info))
+            os.chmod(target, 0o600)
+            written += 1
+    return written, skipped
+
+
+def _display_path(path: str) -> str:
+    """A path for display: bare names get a `./` prefix to read as a local path."""
+    if path.startswith(("/", ".", "~")):
+        return path
+    return f"./{path}"
+
+
+def _human_bytes(count: int) -> str:
+    if count < 1000:
+        return f"{count} B"
+    if count < 1_000_000:
+        return f"{count / 1000:.1f} kB"
+    return f"{count / 1_000_000:.1f} MB"
+
+
+def _bundle_error_message(exc: ApiError) -> str | None:
+    """Friendly text for the shared bundle error responses, or ``None`` to fall
+    through to the generic error handler."""
+    if exc.status == 404:
+        return "bundle not found; check the id."
+    if exc.status == 410:
+        return f"bundle is {exc.detail} and can no longer be accessed."
+    if exc.status == 409 and exc.detail == "bundle_preparing":
+        return "the bundle is still being prepared; try again shortly."
+    if exc.status == 429:
+        return "rate limited; wait a few minutes and try again."
+    if exc.status == 400 and exc.detail == "challenge_failed":
+        return (
+            "bundle creation requires browser verification; download it from "
+            "https://tripwire.so."
+        )
+    return None
+
+
+@bundle.command("download")
+@click.argument("bundle_id", metavar="[ID]", required=False)
+@click.option(
+    "-o", "--output", "output",
+    help="extract dir (default ./<name>/); with --zip, the .zip file; "
+    "'-' streams the zip to stdout",
+)
+@click.option(
+    "--zip", "keep_zip", is_flag=True,
+    help="keep the raw .zip archive instead of extracting it",
+)
+@click.pass_obj
+@_handle_errors
+def bundle_download(
+    obj: Context, bundle_id: str | None, output: str | None, keep_zip: bool
+) -> None:
+    """Download a bundle and extract it; with no id, issue a fresh bundle for you first."""
+    # Login guard: resolve the authed client first, which raises
+    # NoCredentialsError (the standard "run `tripwire login`" message + nonzero
+    # exit) BEFORE any request is made.
+    client = obj.authed_client()
+    try:
+        _run_bundle_download(client, bundle_id, output, keep_zip)
+    except ApiError as exc:
+        message = _bundle_error_message(exc)
+        if message is None:
+            raise
+        raise click.ClickException(message) from exc
+
+
+def _run_bundle_download(
+    client: ApiClient, bundle_id: str | None, output: str | None, keep_zip: bool
+) -> None:
+    # No id given: issue a fresh bundle for the logged-in user first, then
+    # download it. The create body is empty -- the auth-derived recipient and the
+    # template are both chosen server-side (no email / turnstile_token / template).
+    if not bundle_id:
+        created = client.create_bundle({})
+        bundle_id = created.get("bundle_id")
+        if not bundle_id:
+            raise click.ClickException(
+                "bundle creation did not return an id; nothing to download."
+            )
+        _err(f"created bundle {bundle_id} for you; downloading...")
+
+    headers, buffer = download_with_retry(client, bundle_id)
+    filename = filename_from_disposition(headers.get("content-disposition")) or f"{bundle_id}.zip"
+    # `<name>` = the filename without its `.zip` suffix (fallback: bundle id).
+    name = re.sub(r"\.zip$", "", filename, flags=re.I) or bundle_id
+
+    # `-o -` streams the raw zip bytes to stdout (for piping), taking precedence.
+    if output == "-":
+        click.get_binary_stream("stdout").write(buffer)
+        _err(f"wrote {len(buffer)} bytes to stdout")
+        return
+
+    # `--zip` keeps the raw archive instead of extracting.
+    if keep_zip:
+        if output:
+            dest = os.path.join(output, filename) if os.path.isdir(output) else output
+        else:
+            dest = filename
+        # Refuse to clobber an existing archive (matches the extract path's
+        # non-empty-dir guard).
+        if os.path.exists(dest):
+            raise click.ClickException(
+                f"{_display_path(dest)} already exists; remove it or pass a "
+                "different -o path."
+            )
+        with open(dest, "wb") as handle:
+            handle.write(buffer)
+        os.chmod(dest, 0o600)
+        _err(f"saved {filename} ({_human_bytes(len(buffer))}) -> {_display_path(dest)}")
+        return
+
+    # DEFAULT: extract into `./<name>/` (or `-o <dir>`).
+    directory = output or name
+    if os.path.exists(directory):
+        if not os.path.isdir(directory):
+            raise click.ClickException(
+                f"{_display_path(directory)} exists and is not a directory; "
+                "pass -o <dir> or use --zip."
+            )
+        if os.listdir(directory):
+            raise click.ClickException(
+                f"target directory {_display_path(directory)} already exists and "
+                "is not empty; remove it or pass -o <empty-dir> (or use --zip to "
+                "keep the archive)."
+            )
+    os.makedirs(directory, mode=0o700, exist_ok=True)  # holds planted credentials
+    written, skipped = extract_zip(buffer, directory)
+    for bad in skipped:
+        _err(f"skipped unsafe zip entry: {bad}")
+    _err(f"extracted {written} files -> {_display_path(directory)}/")
+
+
+def _str(value: Any) -> str:
+    return "" if value is None else str(value)
 
 
 def main() -> None:

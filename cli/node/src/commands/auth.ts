@@ -1,11 +1,9 @@
 /**
- * Auth commands: `login`, `logout`, `whoami`.
+ * Auth commands: `login`, `logout`.
  *
  * Login is interactive email-code auth mirroring the Python CLI: `/auth/login/
  * start` once (rate-limited), then re-prompt for the 6-digit code in-band on an
- * invalid/expired code without re-calling start. `whoami` reads the LOCAL cache
- * (never `/auth/me`) and prints the identity line — the same first line `status`
- * prints.
+ * invalid/expired code without re-calling start.
  */
 import { createInterface } from "node:readline/promises";
 
@@ -13,7 +11,6 @@ import type { ApiClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";
 import { type Credentials, DEFAULT_SERVER } from "../config/credentials.js";
 import { CliError } from "../util/errors.js";
-import { identityLine } from "../util/format.js";
 import { out } from "../util/io.js";
 import type { Session } from "../util/session.js";
 
@@ -165,8 +162,4 @@ function credentialsFromLogin(
 
 export function runLogout(session: Session): void {
   out(session.store.clear() ? "cached token removed" : "no cached token");
-}
-
-export function runWhoami(session: Session): void {
-  out(identityLine(session.load()));
 }

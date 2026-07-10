@@ -13,11 +13,11 @@ DEFAULT_TIMEOUT = 10.0
 # window, so an unreachable server never hangs for the full read timeout.
 CONNECT_TIMEOUT = 5.0
 
-# `POST /canary` is synchronous and some types take a little while to provision;
-# the server waits up to ~180s before it gives up. The client read timeout MUST
-# stay above that window: if the client abandons the request first, the server
-# still creates the canary, the one-time credential reveal is lost, and the
-# per-type quota is consumed with no recovery.
+# `POST /canary` is synchronous and provider-minted types can take ~12s/44s/100s
+# today; the server waits up to ``CANARY_CREATE_WAIT_SECONDS`` (180s) before it
+# gives up. The client read timeout MUST stay above that window: if the client
+# abandons the request first, the server still creates the canary, the one-time
+# credential reveal is lost, and the per-type quota is consumed with no recovery.
 CREATE_READ_TIMEOUT = 240.0
 
 
@@ -74,21 +74,24 @@ class ApiClient:
             headers["authorization"] = f"Bearer {self.token}"
         return headers
 
-    def _request(
+    def _send(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
         *,
         timeout: float | None = None,
-    ) -> dict[str, Any]:
+    ) -> httpx.Response:
+        """Perform a request and return the raw ``httpx.Response`` (body unread by
+        this layer). A network failure surfaces as ``ApiError(0, ...)``; the
+        caller decides how to interpret the status and read the body."""
         kwargs: dict[str, Any] = {}
         if timeout is not None:
             # Per-request override: long read window, short connect so an
             # unreachable server still fails fast.
             kwargs["timeout"] = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
         try:
-            response = self._client.request(
+            return self._client.request(
                 method,
                 self.base_url + path,
                 json=payload,
@@ -97,11 +100,32 @@ class ApiClient:
             )
         except httpx.RequestError as exc:
             raise ApiError(0, f"cannot reach {self.base_url}: {exc}") from exc
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        response = self._send(method, path, payload, timeout=timeout)
         if response.is_error:
             raise ApiError(response.status_code, _error_detail(response))
         if not response.content:
             return {}
         return response.json()
+
+    def _download(
+        self, method: str, path: str
+    ) -> tuple[httpx.Headers, bytes]:
+        """Perform a request whose success body is BINARY (e.g. the bundle zip).
+        Raises ``ApiError`` on any non-2xx (decoding the JSON error detail), else
+        returns the response headers plus the body as ``bytes``."""
+        response = self._send(method, path)
+        if response.is_error:
+            raise ApiError(response.status_code, _error_detail(response))
+        return response.headers, response.content
 
     def login_start(self, email: str) -> dict[str, Any]:
         """Begin an email-code login: the server emails a 6-digit code. The
@@ -142,11 +166,22 @@ class ApiClient:
     def get_canary(self, canary_id: str) -> dict[str, Any]:
         return self._request("GET", f"/canary/{canary_id}")
 
-    def deactivate_canary(self, canary_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/canary/{canary_id}/deactivate")
-
     def delete_canary(self, canary_id: str) -> dict[str, Any]:
         return self._request("DELETE", f"/canary/{canary_id}")
+
+    # ----- bundle (public server endpoints; the CLI still requires login) -----
+
+    def create_bundle(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Issue a fresh bait bundle. In the CLI's no-id path the body is empty:
+        the recipient (from the auth token) and the template are both chosen
+        server-side."""
+        return self._request("POST", "/bundles", body)
+
+    def download_bundle(self, bundle_id: str) -> tuple[httpx.Headers, bytes]:
+        """Download a bundle: ``POST /bundles/{id}`` returns a binary zip body.
+        Returns the response headers (for the ``Content-Disposition`` filename)
+        plus the raw zip bytes."""
+        return self._download("POST", f"/bundles/{bundle_id}")
 
 
 def _error_detail(response: httpx.Response) -> str:

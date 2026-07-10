@@ -18,7 +18,6 @@ export interface CreateOptions {
   /** Positional type or placement id (the only way to name the type). */
   type?: string;
   note?: string;
-  expires?: string;
   output?: string;
 }
 
@@ -46,7 +45,6 @@ async function runTypeCreate(
 ): Promise<void> {
   const payload: Record<string, unknown> = { type: entry.wire };
   if (opts.note) payload["memo"] = opts.note;
-  if (opts.expires) payload["expires_at"] = opts.expires;
 
   const result = await createOrExplain(session, payload, entry.waitSeconds);
 
@@ -67,7 +65,6 @@ async function runPlacementCreate(
 
   const payload: Record<string, unknown> = { type: entry.wire };
   if (opts.note) payload["memo"] = opts.note;
-  if (opts.expires) payload["expires_at"] = opts.expires;
 
   const result = await createOrExplain(session, payload, entry.waitSeconds);
 

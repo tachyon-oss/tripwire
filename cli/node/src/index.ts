@@ -2,8 +2,9 @@
  * `tripwire` — command-line client for Tripwire security canaries.
  *
  * Noun-first grammar:
- *   tripwire login | logout | whoami | status | api
- *   tripwire canary create|list|show|disarm|delete|types|api
+ *   tripwire login | logout | status
+ *   tripwire canary create|list|show|delete
+ *   tripwire bundle download
  * Single canonical names only — no command aliases and no back-compat surface.
  *
  * This module is side-effect free: it exports `buildProgram` (and `Session`)
@@ -13,15 +14,9 @@ import { readFileSync } from "node:fs";
 
 import { Command } from "commander";
 
-import { runApi } from "./commands/api.js";
-import { runLogin, runLogout, runWhoami } from "./commands/auth.js";
-import {
-  runBundleContents,
-  runBundleCreate,
-  runBundleDownload,
-  runBundleShow,
-} from "./commands/bundle.js";
-import { runDelete, runDisarm, runList, runShow, runTypes } from "./commands/canary.js";
+import { runLogin, runLogout } from "./commands/auth.js";
+import { runBundleDownload } from "./commands/bundle.js";
+import { runDelete, runList, runShow } from "./commands/canary.js";
 import { runCreate } from "./commands/create.js";
 import { runStatus } from "./commands/status.js";
 import { PLACEMENTS } from "./placements/index.js";
@@ -67,11 +62,6 @@ export function buildProgram(session: Session): Command {
     .action(action(() => runLogout(session)));
 
   program
-    .command("whoami")
-    .description("print the cached identity (first line of status)")
-    .action(action(() => runWhoami(session)));
-
-  program
     .command("status")
     .description("cross-object dashboard: identity, counts, fired-first canaries")
     .option("--watch", "re-poll and redraw every few seconds")
@@ -82,8 +72,6 @@ export function buildProgram(session: Session): Command {
       ),
     );
 
-  addApiCommand(program, session);
-
   // ----- canary group -----
   const canary = program.command("canary").description("create and manage canaries");
 
@@ -92,7 +80,6 @@ export function buildProgram(session: Session): Command {
     .argument("[type]", `canary type, one of: ${creatableTypeList()}`)
     .description("create a canary; the credential is shown once, at creation")
     .option("--note <note>", "your own note to remember where you placed it")
-    .option("--expires <when>", "expiry timestamp (ISO 8601)")
     .option("-o, --output <file>", "write the credential to a file instead of stdout")
     .action(
       action(
@@ -100,14 +87,12 @@ export function buildProgram(session: Session): Command {
           type: string | undefined,
           opts: {
             note?: string;
-            expires?: string;
             output?: string;
           },
         ) =>
           runCreate(session, {
             type,
             note: opts.note,
-            expires: opts.expires,
             output: opts.output,
           }),
       ),
@@ -133,30 +118,15 @@ export function buildProgram(session: Session): Command {
     .action(action(async (id: string, opts: { json?: boolean }) => runShow(session, id, opts)));
 
   canary
-    .command("disarm")
-    .argument("<id>", "canary id")
-    .description("disarm (deactivate) a canary")
-    .action(action(async (id: string) => runDisarm(session, id)));
-
-  canary
     .command("delete")
     .argument("<id>", "canary id")
     .description("delete a canary")
     .action(action(async (id: string) => runDelete(session, id)));
 
-  canary
-    .command("types")
-    .argument("[type]", "explain one type")
-    .description("list the canary type catalog, or explain one type")
-    .option("--json", "emit the catalog as JSON")
-    .action(action((type: string | undefined, opts: { json?: boolean }) => runTypes(type, opts)));
-
-  addApiCommand(canary, session);
-
   // ----- bundle group (public endpoints, but the CLI still requires login) -----
   const bundle = program
     .command("bundle")
-    .description("download and inspect bait bundles");
+    .description("download bait bundles");
 
   bundle
     .command("download")
@@ -173,52 +143,5 @@ export function buildProgram(session: Session): Command {
       ),
     );
 
-  bundle
-    .command("show")
-    .argument("<id>", "bundle id")
-    .description("show a bundle's status, expiry, and canary placements")
-    .option("--json", "emit verbatim server JSON")
-    .action(
-      action(async (id: string, opts: { json?: boolean }) => runBundleShow(session, id, opts)),
-    );
-
-  bundle
-    .command("contents")
-    .argument("<id>", "bundle id")
-    .description("list the bundle's rendered files")
-    .option("--json", "emit verbatim server JSON (includes file contents)")
-    .action(
-      action(async (id: string, opts: { json?: boolean }) =>
-        runBundleContents(session, id, opts),
-      ),
-    );
-
-  bundle
-    .command("create")
-    .description("issue a new bundle for you")
-    .action(action(async () => runBundleCreate(session)));
-
   return program;
-}
-
-/** Mount the generic `api <method> <path> [body]` passthrough on `parent`. */
-function addApiCommand(parent: Command, session: Session): void {
-  parent
-    .command("api")
-    .argument("<method>", "HTTP method (GET, POST, ...)")
-    .argument("<path>", "API path, e.g. /canary")
-    .argument("[body]", "JSON request body")
-    .description("authenticated passthrough to the REST API")
-    .option("--json", "print the raw response body")
-    .option("--timeout <seconds>", "read timeout in seconds (default ~240, above the server's create wait)")
-    .action(
-      action(
-        async (
-          method: string,
-          path: string,
-          body: string | undefined,
-          opts: { json?: boolean; timeout?: string },
-        ) => runApi(session, method, path, body, opts),
-      ),
-    );
 }
