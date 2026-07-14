@@ -21,14 +21,23 @@ Requires Node >= 18 (uses the built-in `fetch`).
 ## Getting started
 
 ```bash
-tripwire login                 # emailed 6-digit code -> cached token
 tripwire canary create aws.access_key
 tripwire status                # did anything fire?
 ```
 
+There is no separate login step. Any command that needs an account signs you in
+first: it emails you a 6-digit code, prompts for it, then carries on with what
+you asked for. `tripwire auth login` exists for when you would rather do it up
+front.
+
+Signing in needs a terminal. Without a TTY (CI, a pipe, a coding agent) there is
+no way to ask you for a code, so the command fails immediately with `run
+`tripwire auth login`` instead of hanging on a prompt you cannot see. Log in once
+interactively; the cached token is then used non-interactively.
+
 Login caches a token at `~/.config/tripwire/credentials.json` (honoring
 `XDG_CONFIG_HOME`). Point at a self-hosted or test server by exporting
-`TRIPWIRE_SERVER=https://host/api/v1` before `tripwire login`.
+`TRIPWIRE_SERVER=https://host/api/v1` before you sign in.
 
 ## Grammar
 
@@ -36,8 +45,9 @@ Noun-first: objects (`canary`, `bundle`) with closed verbs over an open type
 catalog.
 
 ```
-tripwire login [--email <addr>]
-tripwire logout
+tripwire auth login [--email <addr>]
+tripwire auth logout
+tripwire auth status
 tripwire status [--watch] [--json]
 
 tripwire canary create <type> [--note S] [-o <file>]
@@ -47,6 +57,9 @@ tripwire canary delete <id>
 
 tripwire bundle download [<id>] [-o <path>] [--zip]
 ```
+
+`tripwire status` is the dashboard (did anything fire?). `tripwire auth status`
+is your session (who am I, when does it expire?).
 
 Single canonical names only — there are no command aliases and no back-compat
 surface.
