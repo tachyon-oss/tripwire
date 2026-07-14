@@ -154,21 +154,28 @@ class _BundleClient:
 
 class _TtyStream:
     """Stands in for a terminal. `CliRunner` feeds input through a pipe, so
-    `sys.stdin.isatty()` is False under test and the CLI would (correctly) refuse
-    to prompt. The login tests exercise the interactive flow, so they need a
-    prompter that reports a terminal; `click.prompt` still reads the runner's
-    simulated stdin for the answers."""
+    `sys.stdin.isatty()` is False under test and the CLI (correctly) refuses to
+    prompt. Tests that exercise the INTERACTIVE flow opt into this via
+    `tty=True`; `click.prompt` still reads the runner's simulated stdin for the
+    answers.
+
+    Do NOT make this the default. `interactive()` probes this stream while
+    `ask()` reads the real stdin, so a fake terminal in the shared helper would
+    send every cold-cache test down the auto-login path and make the no-TTY guard
+    tests pass whether or not the guard still exists."""
 
     def isatty(self) -> bool:
         return True
 
 
-def _context(tmp_path, client) -> Context:
+def _context(tmp_path, client, *, tty: bool = False) -> Context:
     store = credentials.CredentialStore(tmp_path / "credentials.json")
     return Context(
         store=store,
         client_factory=lambda server, token=None: client,
-        prompter=TtyPrompter(stdin=_TtyStream()),
+        # Default is the real prompter, which reports NO terminal under CliRunner.
+        # That is what the no-TTY guard tests depend on being genuine.
+        prompter=TtyPrompter(stdin=_TtyStream()) if tty else TtyPrompter(),
     )
 
 
@@ -177,8 +184,8 @@ def _context(tmp_path, client) -> Context:
 VALID_UNTIL = 4_102_444_800  # 2100-01-01Z, epoch seconds
 
 
-def _logged_in_context(tmp_path, client, *, email=None) -> Context:
-    ctx = _context(tmp_path, client)
+def _logged_in_context(tmp_path, client, *, email=None, tty: bool = False) -> Context:
+    ctx = _context(tmp_path, client, tty=tty)
     ctx.store.save(
         credentials.Credentials(
             server="https://api.example",
@@ -325,7 +332,7 @@ def test_login_emails_a_code_and_caches_it(tmp_path, monkeypatch):
             "role": "user",
         }
     )
-    ctx = _context(tmp_path, client)
+    ctx = _context(tmp_path, client, tty=True)
     result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     assert client.login_starts == ["alice@example.com"]
@@ -347,7 +354,7 @@ def test_login_against_default_server_omits_server_and_role(tmp_path, monkeypatc
             "role": "user",
         }
     )
-    ctx = _context(tmp_path, client)
+    ctx = _context(tmp_path, client, tty=True)
     result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     on_disk = json.loads((tmp_path / "credentials.json").read_text())
@@ -364,7 +371,7 @@ def test_login_email_default_comes_from_cached_login(tmp_path, monkeypatch):
     client = _FakeClient(
         result={"user_id": "usr_alice", "access_token": "tok", "expires_at": 1700000000}
     )
-    ctx = _logged_in_context(tmp_path, client, email="prior@example.com")
+    ctx = _logged_in_context(tmp_path, client, email="prior@example.com", tty=True)
     result = CliRunner().invoke(cli, ["auth", "login"], input="\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     assert "prior@example.com" in result.output
@@ -377,7 +384,7 @@ def test_login_email_reprompts_on_invalid_code_without_recalling_start(tmp_path,
         result={"user_id": "usr_alice", "access_token": "tok", "expires_at": 1700000000},
         invalid_attempts=2,
     )
-    ctx = _context(tmp_path, client)
+    ctx = _context(tmp_path, client, tty=True)
     result = CliRunner().invoke(
         cli, ["auth", "login"], input="alice@example.com\n000000\n111111\n123456\n", obj=ctx
     )
@@ -396,7 +403,7 @@ def test_login_email_gives_up_after_too_many_bad_codes(tmp_path, monkeypatch):
         result={"user_id": "usr_alice", "access_token": "tok", "expires_at": 1700000000},
         invalid_attempts=99,
     )
-    ctx = _context(tmp_path, client)
+    ctx = _context(tmp_path, client, tty=True)
     result = CliRunner().invoke(
         cli, ["auth", "login"], input="alice@example.com\n000000\n111111\n222222\n", obj=ctx
     )
@@ -411,7 +418,7 @@ def test_login_email_flag_skips_email_prompt_only(tmp_path, monkeypatch):
     client = _FakeClient(
         result={"user_id": "usr_alice", "access_token": "tok", "expires_at": 1700000000}
     )
-    ctx = _context(tmp_path, client)
+    ctx = _context(tmp_path, client, tty=True)
     result = CliRunner().invoke(
         cli, ["auth", "login", "--email", "ci@example.com"], input="123456\n", obj=ctx
     )
@@ -428,7 +435,7 @@ def test_login_start_rate_limit_gives_friendly_message(tmp_path, monkeypatch):
             self.login_starts.append(email)
             raise ApiError(429, "rate_limited")
 
-    ctx = _context(tmp_path, _StartErr())
+    ctx = _context(tmp_path, _StartErr(), tty=True)
     result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n", obj=ctx)
     assert result.exit_code != 0
     assert "too many login attempts from this network" in result.output
@@ -445,7 +452,7 @@ def test_login_code_exchange_5xx_tells_user_code_may_be_spent(tmp_path, monkeypa
             self.code_logins.append((email, code))
             raise ApiError(status, "internal_error")
 
-    ctx = _context(tmp_path, _CodeErr())
+    ctx = _context(tmp_path, _CodeErr(), tty=True)
     result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code != 0
     assert "may already be spent" in result.output
@@ -801,7 +808,10 @@ def test_commands_need_login(tmp_path, argv):
     client = _FakeClient(result={"canaries": []})
     result = CliRunner().invoke(cli, argv, obj=_context(tmp_path, client))
     assert result.exit_code != 0
-    assert "not logged in" in result.output
+    # Assert on the guard's OWN words. "not logged in" also appears in the
+    # auto-login notice ("not logged in. signing you in first."), so matching it
+    # alone would pass even if the no-TTY guard were deleted entirely.
+    assert "no TTY available" in result.output
 
 
 @pytest.mark.parametrize(
@@ -982,7 +992,9 @@ def test_bundle_download_requires_login(tmp_path):
         cli, ["bundle", "download", "b1"], obj=_context(tmp_path, client)
     )
     assert result.exit_code != 0
-    assert "not logged in" in result.output
+    # The guard's own words: "not logged in" alone would also match the
+    # auto-login notice, so it would pass with the guard removed.
+    assert "no TTY available" in result.output
     # No request was made (login guard fires before any call).
     assert client.calls == []
 
