@@ -2,14 +2,18 @@
 
 Noun-first grammar (single canonical names only; no aliases, no back-compat):
 
-  tripwire login | logout | status
+  tripwire auth login | auth logout | auth status
+  tripwire status
   tripwire canary create <type> [--note <s>] [-o <file>]
   tripwire canary list [--type <t>] [--fired] [--json]
   tripwire canary show <id> [--json]
   tripwire canary delete <id>
   tripwire bundle download [<id>] [-o <path>] [--zip]
 
-`login` does not take a server flag. The server is resolved as
+Any command that needs auth signs you in first when it has a TTY; without one it
+fails with a "run `tripwire auth login`" message rather than hanging on a prompt.
+
+`auth login` does not take a server flag. The server is resolved as
 $TRIPWIRE_SERVER, then the last-used cached server, then the default; set
 $TRIPWIRE_SERVER to point at a self-hosted or test server.
 """
@@ -33,6 +37,7 @@ import click
 
 from tripwire_cli import credentials
 from tripwire_cli.client import ApiClient, ApiError
+from tripwire_cli.prompt import Prompter, TtyPrompter
 
 DEFAULT_SERVER = credentials.DEFAULT_SERVER
 
@@ -233,40 +238,83 @@ def resolve_login_server(env: dict[str, str], cached: str | None) -> str:
 
 
 class Context:
-    """Shared state for the commands: the credential store and a factory that
-    builds an :class:`ApiClient` from a server URL and optional token. Both are
-    injectable so tests can supply fakes."""
+    """Shared state for the commands: the credential store, a factory that builds
+    an :class:`ApiClient` from a server URL and optional token, and the prompt
+    channel. All three are injectable so tests can supply fakes.
+
+    This is the CLI's single authentication choke point: every authenticated
+    command goes through :meth:`authed_client`, so automatic sign-in lives here
+    and nowhere else."""
 
     def __init__(
         self,
         store: credentials.CredentialStore | None = None,
         client_factory: Callable[[str, str | None], ApiClient] | None = None,
+        prompter: Prompter | None = None,
     ):
         self.store = store or credentials.default_store()
         self._client_factory = client_factory or (
             lambda server, token=None: ApiClient(base_url=server, token=token)
         )
+        self.prompter = prompter or TtyPrompter()
 
     def client(self, server: str, token: str | None = None) -> ApiClient:
         return self._client_factory(server, token)
 
+    def require_credentials(self) -> credentials.Credentials:
+        """The credentials an authenticated command runs on: the cached token when
+        it is usable, otherwise an interactive sign-in performed right now.
+        Without a TTY there is no way to ask for a code, so fail fast rather than
+        hang (CI, a pipe, or an agent all land here)."""
+        cached = self.store.try_load()
+        if cached is not None and not cached.is_expired():
+            return cached
+
+        if not self.prompter.interactive():
+            raise click.ClickException(
+                "not logged in. run `tripwire auth login` first.\n"
+                "(no TTY available to prompt for a sign-in code)"
+            )
+        self.prompter.notify(
+            "your session has expired. signing you in again."
+            if cached is not None
+            else "not logged in. signing you in first."
+        )
+        return self.log_in()
+
+    def log_in(self, email: str | None = None) -> credentials.Credentials:
+        """Run the interactive email-code login and cache the result."""
+        server = resolve_login_server(dict(os.environ), self.cached_server())
+        creds = _email_login(
+            self.client(server),
+            server,
+            self.cached_login_email(),
+            email=email,
+            prompter=self.prompter,
+        )
+        self.store.save(creds)
+        return creds
+
     def authed_client(self) -> ApiClient:
-        creds = self.store.load()
+        creds = self.require_credentials()
         return self.client(creds.resolved_server(), creds.access_token)
 
+    def current_credentials(self) -> credentials.Credentials | None:
+        """The cached credentials, or None. Never prompts: this is what `auth
+        status` reports on, and asking for a sign-in code there would be absurd."""
+        return self.store.try_load()
+
     def cached_server(self) -> str | None:
-        try:
-            return self.store.load().server
-        except credentials.NoCredentialsError:
-            return None
+        # try_load, not load: an unusable cache is exactly the case that sends us
+        # here to log in, so it must not resurface as a parse error mid-login.
+        cached = self.store.try_load()
+        return cached.server if cached is not None else None
 
     def cached_login_email(self) -> str | None:
         """The email from a prior login (the local cache) as the prompt default,
         else None. Never derived from git or any other local identity."""
-        try:
-            return self.store.load().email
-        except credentials.NoCredentialsError:
-            return None
+        cached = self.store.try_load()
+        return cached.email if cached is not None else None
 
 
 # --- errors -----------------------------------------------------------------
@@ -290,8 +338,8 @@ def _unauthorized_message(detail: str) -> str:
     session-expired prompt; otherwise keep the server detail and append a hint."""
     lowered = detail.lower()
     if any(marker in lowered for marker in _EXPIRED_SESSION_MARKERS):
-        return "session expired; run `tripwire login`"
-    return f"401: {detail}\nhint: run `tripwire login`"
+        return "session expired; run `tripwire auth login`"
+    return f"401: {detail}\nhint: run `tripwire auth login`"
 
 
 def _handle_errors(func):
@@ -322,24 +370,26 @@ def cli(ctx: click.Context) -> None:
     ctx.obj = ctx.obj or Context()
 
 
-# --- auth / session ---------------------------------------------------------
+# --- auth group -------------------------------------------------------------
 
 
-@cli.command()
+@cli.group()
+def auth() -> None:
+    """Log in, log out, and check your session."""
+
+
+@auth.command("login")
 @click.option("--email", help="email address to sign in with")
 @click.pass_obj
 @_handle_errors
-def login(obj: Context, email: str | None) -> None:
+def auth_login(obj: Context, email: str | None) -> None:
     """Log in with an emailed sign-in code and cache a token.
 
     Sends a 6-digit code to your email (`--email`, else the address from your
     last login, else prompted) and asks you to enter it. Login is interactive:
     there is no password login and no non-interactive code flag.
     """
-    server = resolve_login_server(dict(os.environ), obj.cached_server())
-    client = obj.client(server)
-    creds = _email_login(client, server, obj.cached_login_email(), email=email)
-    obj.store.save(creds)
+    creds = obj.log_in(email=email)
     _out(f"logged in as {creds.user_id}")
 
 
@@ -349,6 +399,7 @@ def _email_login(
     default_email: str | None,
     *,
     email: str | None = None,
+    prompter: Prompter,
 ) -> credentials.Credentials:
     """Emailed-code login.
 
@@ -356,13 +407,15 @@ def _email_login(
     6-digit code, re-prompting in-band on an invalid/expired code without
     re-calling start. ``email`` (e.g. from ``--email``) skips the email prompt.
     """
-    email = email or click.prompt("email", default=default_email)
+    email = email or prompter.ask("email", default_email)
+    if not email:
+        raise click.ClickException("an email address is required to log in.")
 
     _start_email_login(client, email)
-    _err(f"sent a 6-digit sign-in code to {email}; check your inbox.")
+    prompter.notify(f"sent a 6-digit sign-in code to {email}; check your inbox.")
     last_error: ApiError | None = None
     for attempt in range(EMAIL_CODE_ATTEMPTS):
-        entered = click.prompt("code")
+        entered = prompter.ask("code")
         try:
             response = _exchange_code(client, email, entered)
         except ApiError as exc:
@@ -370,7 +423,9 @@ def _email_login(
                 last_error = exc
                 remaining = EMAIL_CODE_ATTEMPTS - attempt - 1
                 if remaining:
-                    _err(f"invalid or expired code; {remaining} attempt(s) left.")
+                    prompter.notify(
+                        f"invalid or expired code; {remaining} attempt(s) left."
+                    )
                 continue
             raise
         return _credentials_from_login(server, response, email=email)
@@ -387,7 +442,7 @@ def _start_email_login(client: ApiClient, email: str) -> None:
         if exc.status == 429:
             raise click.ClickException(
                 "too many login attempts from this network; wait ~10 minutes and "
-                "try `tripwire login` again."
+                "try `tripwire auth login` again."
             ) from exc
         raise
 
@@ -396,7 +451,7 @@ def _exchange_code(client: ApiClient, email: str, code: str) -> dict[str, Any]:
     """Exchange a code for a token. A server-side 5xx here is the dangerous case:
     the code may already have been consumed, so retrying the same code is futile
     and silently re-sending one would burn the rate-limited start. Surface a
-    clear message and have the user re-run `tripwire login` for a fresh code."""
+    clear message and have the user re-run `tripwire auth login` for a fresh code."""
     try:
         return client.login_with_code(email, code)
     except ApiError as exc:
@@ -404,7 +459,7 @@ def _exchange_code(client: ApiClient, email: str, code: str) -> dict[str, Any]:
             raise click.ClickException(
                 "the server errored while verifying your code "
                 f"({exc.status}: {exc.detail}); your code may already be spent. "
-                "run `tripwire login` again to request a fresh code."
+                "run `tripwire auth login` again to request a fresh code."
             ) from exc
         raise
 
@@ -422,7 +477,7 @@ def _credentials_from_login(
     if not user_id or not access_token or expires_at is None:
         raise click.ClickException(
             "the login response was malformed (missing "
-            "user_id/access_token/expires_at); run `tripwire login` again."
+            "user_id/access_token/expires_at); run `tripwire auth login` again."
         )
     # Store the server only when it is a non-default (self-hosted / test) target,
     # so a normal user's cache omits it.
@@ -435,12 +490,43 @@ def _credentials_from_login(
     )
 
 
-@cli.command()
+@auth.command("logout")
 @click.pass_obj
 @_handle_errors
-def logout(obj: Context) -> None:
+def auth_logout(obj: Context) -> None:
     """Forget the cached token."""
     _out("cached token removed" if obj.store.clear() else "no cached token")
+
+
+@auth.command("status")
+@click.pass_obj
+@_handle_errors
+def auth_status(obj: Context) -> None:
+    """Show who you are logged in as, and when the session expires."""
+    creds = obj.current_credentials()
+    if creds is None:
+        raise click.ClickException("not logged in. run `tripwire auth login`.")
+    _out(_identity_line(creds))
+    if creds.is_expired():
+        _out("session: expired. run `tripwire auth login`")
+    else:
+        expiry = time.strftime("%Y-%m-%d %H:%M", time.gmtime(creds.expires_at))
+        _out(f"session: valid until {expiry} UTC")
+
+
+# The pre-0.4 spellings. Registered (hidden) only so they fail with a migration
+# hint instead of click's bare "No such command". Not aliases: they do not log
+# anyone in.
+@cli.command("login", hidden=True, context_settings={"ignore_unknown_options": True})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def moved_login(args: tuple[str, ...]) -> None:
+    raise click.ClickException("`tripwire login` moved to `tripwire auth login`")
+
+
+@cli.command("logout", hidden=True, context_settings={"ignore_unknown_options": True})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def moved_logout(args: tuple[str, ...]) -> None:
+    raise click.ClickException("`tripwire logout` moved to `tripwire auth logout`")
 
 
 @cli.command()
@@ -457,10 +543,10 @@ def status(obj: Context, watch: bool, as_json: bool) -> None:
     if not watch:
         _render_status_once(obj, as_json)
         return
-    # Check auth once up front (fail fast if not logged in), then poll every 5s,
+    # Resolve auth once up front (signing in first if needed), then poll every 5s,
     # clearing the screen between frames, until interrupted. A transient error
     # between frames is tolerated: warn and keep polling rather than exiting.
-    obj.store.load()
+    obj.require_credentials()
     while True:
         click.echo("\x1b[2J\x1b[H", nl=False)
         try:
@@ -471,7 +557,7 @@ def status(obj: Context, watch: bool, as_json: bool) -> None:
 
 
 def _render_status_once(obj: Context, as_json: bool) -> None:
-    creds = obj.store.load()
+    creds = obj.require_credentials()
     response = obj.authed_client().list_canaries()
     if as_json:
         _print_json(response)
@@ -898,9 +984,8 @@ def bundle_download(
     obj: Context, bundle_id: str | None, output: str | None, keep_zip: bool
 ) -> None:
     """Download a bundle and extract it; with no id, issue a fresh bundle for you first."""
-    # Login guard: resolve the authed client first, which raises
-    # NoCredentialsError (the standard "run `tripwire login`" message + nonzero
-    # exit) BEFORE any request is made.
+    # Login guard: resolve the authed client first, which signs the user in (or,
+    # without a TTY, fails fast) BEFORE any request is made.
     client = obj.authed_client()
     try:
         _run_bundle_download(client, bundle_id, output, keep_zip)

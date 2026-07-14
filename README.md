@@ -18,9 +18,13 @@ Tripwire is a product of [Tachyon International Inc.](https://tachyon.so)
 
 ```bash
 npm i -g @tachyonhq/tripwire
-tripwire login              # emailed 6-digit code -> cached token
 tripwire bundle download    # get your bundle of decoy credentials
 ```
+
+No login step: the first command that needs an account signs you in, with a
+6-digit code emailed to you. (`tripwire auth login` if you would rather do it up
+front. In CI or inside an agent, where there is no terminal to prompt at, sign in
+once interactively first.)
 
 ## What's in this repo
 

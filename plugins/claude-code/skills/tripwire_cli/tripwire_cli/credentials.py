@@ -12,6 +12,7 @@ import dataclasses
 import json
 import os
 import stat
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -34,6 +35,11 @@ class Credentials:
         """The effective API base URL: the stored server, or the public default."""
         return self.server or DEFAULT_SERVER
 
+    def is_expired(self, now: float | None = None) -> bool:
+        """Whether the cached token has passed its expiry. ``expires_at`` is epoch
+        seconds (the backend sets it alongside the JWT ``exp`` claim)."""
+        return self.expires_at <= (time.time() if now is None else now)
+
 
 class NoCredentialsError(Exception):
     pass
@@ -52,13 +58,22 @@ class CredentialStore:
 
     def load(self) -> Credentials:
         if not self.path.exists():
-            raise NoCredentialsError("not logged in (run `tripwire login`)")
+            raise NoCredentialsError("not logged in (run `tripwire auth login`)")
         data = json.loads(self.path.read_text())
         # Forward-compatible: keep only the fields this CLI knows about, so an
         # older CLI reading a cache written by a newer one does not crash on an
         # unexpected keyword argument. Also drops the legacy ``role`` field.
         known = {f.name for f in dataclasses.fields(Credentials)}
         return Credentials(**{k: v for k, v in data.items() if k in known})
+
+    def try_load(self) -> Credentials | None:
+        """The cached credentials, or None when there is no usable cache. Missing,
+        unreadable, and corrupt files all mean the same thing: log in again. A
+        TypeError is the "valid JSON, missing a required field" shape of corrupt."""
+        try:
+            return self.load()
+        except (NoCredentialsError, ValueError, TypeError, OSError):
+            return None
 
     def save(self, credentials: Credentials) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)

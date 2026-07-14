@@ -19,6 +19,17 @@ what was reached.
 That's it. The plugin bundles its own client; there is nothing else to
 install. (`uvx` is used under the hood to run it in an isolated environment.)
 
+### Sign in once, in your terminal
+
+```bash
+tripwire auth login
+```
+
+The plugin runs the CLI non-interactively, so it cannot prompt you for the
+6-digit sign-in code itself. Run `tripwire auth login` once in a terminal and the
+plugin will use the cached token from then on. If you skip this, the plugin will
+tell you to run it.
+
 ## Use
 
 - `/tripwire:init` — guided setup of your first canary. It suggests scenarios
@@ -72,4 +83,4 @@ Nothing in your real systems is touched without your say-so.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `server` | (Tripwire production API) | Self-hosting only. Consumed at `tripwire login`; set it before logging in. |
+| `server` | (Tripwire production API) | Self-hosting only. Consumed at `tripwire auth login`; set it before logging in. |
