@@ -10,7 +10,7 @@ import { runList } from "../src/commands/canary.js";
 import { CredentialStore, isExpired } from "../src/config/credentials.js";
 import { buildProgram } from "../src/index.js";
 import { CliError } from "../src/util/errors.js";
-import type { Prompter } from "../src/util/prompt.js";
+import { type Prompter, TtyPrompter } from "../src/util/prompt.js";
 import { Session } from "../src/util/session.js";
 
 let dir: string;
@@ -46,6 +46,51 @@ describe("isExpired", () => {
       typeof isExpired
     >[0];
     expect(isExpired(garbage, NOW_MS)).toBe(true);
+  });
+
+  it.each([
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["NaN", Number.NaN],
+    ["an unrenderable far-future value", 1e17],
+  ])("is true for %s rather than trusting it as never-expiring", (_label, expires) => {
+    expect(
+      isExpired(
+        { user_id: "usr_1", access_token: "tok", expires_at: expires as number },
+        NOW_MS,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("TtyPrompter.interactive", () => {
+  // The guard that keeps the CLI from hanging on an invisible prompt in CI, in a
+  // pipe, and inside the Claude Code plugin. Every other no-TTY test injects a
+  // fake prompter, so without this one nothing would catch this returning `true`.
+  it("is false when stdin is not a TTY", () => {
+    const notATty = { isTTY: false } as unknown as NodeJS.ReadStream;
+    expect(new TtyPrompter(notATty).interactive()).toBe(false);
+  });
+
+  it("is true when stdin is a TTY", () => {
+    const aTty = { isTTY: true } as unknown as NodeJS.ReadStream;
+    expect(new TtyPrompter(aTty).interactive()).toBe(true);
+  });
+});
+
+describe("credential cache validation", () => {
+  it.each([
+    ["a missing access_token", '{"user_id":"usr_1","expires_at":9999999999}'],
+    ["a missing user_id", '{"access_token":"tok","expires_at":9999999999}'],
+    ["an empty access_token", '{"user_id":"u","access_token":"","expires_at":9999999999}'],
+    ["a JSON null", "null"],
+    ["a JSON array", "[]"],
+  ])("treats %s as not-logged-in rather than a usable session", (_label, contents) => {
+    // Both CLIs share this file, so they must agree on what "logged in" means.
+    // Node used to accept these partial caches and fire an unauthenticated
+    // request, while Python rejected them and signed the user in.
+    const path = join(dir, "credentials.json");
+    writeFileSync(path, contents);
+    expect(new CredentialStore(path).tryLoad()).toBeNull();
   });
 });
 

@@ -41,6 +41,10 @@ export function unauthorizedMessage(detail: string): string {
 function messageFor(error: unknown): string | null {
   if (error instanceof CliError) return error.message;
   if (error instanceof NoCredentialsError) return error.message;
+  // readline rejects with an AbortError when the user hits Ctrl+C / Ctrl+D at a
+  // prompt. Backing out of a prompt is never a crash; `TtyPrompter.ask` already
+  // maps this, so this is the backstop for any other prompt we add later.
+  if (error instanceof Error && error.name === "AbortError") return "sign-in cancelled.";
   if (error instanceof ApiError) {
     if (error.status === 401) return unauthorizedMessage(error.detail);
     return `${error.status}: ${error.detail}`;

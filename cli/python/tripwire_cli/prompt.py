@@ -10,7 +10,7 @@ a rendered credential block) and must stay clean.
 from __future__ import annotations
 
 import sys
-from typing import Protocol
+from typing import Protocol, TextIO
 
 import click
 
@@ -27,8 +27,12 @@ class Prompter(Protocol):
 
 
 class TtyPrompter:
+    def __init__(self, stdin: TextIO | None = None):
+        # Injectable so `interactive()` is testable without a real terminal.
+        self._stdin = stdin if stdin is not None else sys.stdin
+
     def interactive(self) -> bool:
-        return sys.stdin.isatty()
+        return self._stdin.isatty()
 
     def ask(self, question: str, default: str | None = None) -> str:
         return str(click.prompt(question, default=default, err=True)).strip()

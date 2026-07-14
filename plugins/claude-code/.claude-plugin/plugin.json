@@ -9,7 +9,7 @@
     "server": {
       "type": "string",
       "title": "Tripwire API server",
-      "description": "Tripwire API base URL. Self-hosting only; consumed at `tripwire login` (set before logging in). Leave blank for the Tripwire API.",
+      "description": "Tripwire API base URL. Self-hosting only; consumed at `tripwire auth login` (set before logging in). Leave blank for the Tripwire API.",
       "default": ""
     }
   }

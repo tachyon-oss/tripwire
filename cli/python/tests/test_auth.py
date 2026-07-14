@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from click.testing import CliRunner
 
 from tripwire_cli import credentials
 from tripwire_cli.cli import Context, cli
+from tripwire_cli.prompt import TtyPrompter
 
 FUTURE = 1_900_000_000  # epoch seconds
 PAST = 1_700_000_000
@@ -47,6 +49,51 @@ def test_null_expiry_fails_cleanly_without_a_tty(tmp_path):
     assert result.exit_code != 0
     assert "tripwire auth login" in result.output
     assert not isinstance(result.exception, TypeError)
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [float("inf"), float("nan"), 1e17],
+    ids=["infinity", "nan", "unrenderable-far-future"],
+)
+def test_is_expired_true_for_garbage_rather_than_never_expiring(expires_at):
+    # These must not read as "a token that never expires". Infinity used to, and
+    # rendering it in `auth status` then died with an OverflowError.
+    assert _creds(expires_at).is_expired(now=NOW) is True
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["null", "[]", '"nope"'],
+    ids=["json-null", "json-array", "json-string"],
+)
+def test_try_load_returns_none_for_non_object_json(tmp_path, contents):
+    # `.items()` on a non-dict used to escape as a raw AttributeError traceback.
+    path = tmp_path / "credentials.json"
+    path.write_text(contents)
+    assert credentials.CredentialStore(path).try_load() is None
+
+
+def test_try_load_returns_none_when_the_token_is_missing(tmp_path):
+    # Both CLIs share this file and must agree on what "logged in" means.
+    path = tmp_path / "credentials.json"
+    path.write_text('{"user_id":"usr_1","expires_at":9999999999}')
+    assert credentials.CredentialStore(path).try_load() is None
+
+
+def test_tty_prompter_interactive_follows_stdin(tmp_path):
+    # The guard that stops the CLI hanging on an invisible prompt in CI, in a
+    # pipe, and inside the Claude Code plugin. Every other no-TTY test injects a
+    # fake prompter, so without this nothing would catch this returning True.
+    class _Stream:
+        def __init__(self, tty: bool):
+            self._tty = tty
+
+        def isatty(self) -> bool:
+            return self._tty
+
+    assert TtyPrompter(stdin=_Stream(False)).interactive() is False
+    assert TtyPrompter(stdin=_Stream(True)).interactive() is True
 
 
 def test_try_load_returns_none_without_a_cache(tmp_path):

@@ -551,6 +551,12 @@ def status(obj: Context, watch: bool, as_json: bool) -> None:
         click.echo("\x1b[2J\x1b[H", nl=False)
         try:
             _render_status_once(obj, False)
+        except (click.Abort, click.ClickException, KeyboardInterrupt):
+            # A cancelled sign-in, or a refusal to sign in at all, is the user's
+            # decision -- not a blip to ride out. `click.Abort` subclasses
+            # RuntimeError, so without this the bare `except Exception` below
+            # would eat the Ctrl+C and re-prompt every five seconds forever.
+            raise
         except Exception as exc:  # noqa: BLE001 - keep polling across transients
             _err(f"(temporary error: {exc}; retrying in 5s...)")
         time.sleep(5)

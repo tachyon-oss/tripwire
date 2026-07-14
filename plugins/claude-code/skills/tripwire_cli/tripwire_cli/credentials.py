@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import stat
 import time
@@ -19,6 +20,11 @@ from pathlib import Path
 # The public Tripwire API. A cache targeting this server omits the ``server``
 # field entirely; only self-hosted / test targets are written.
 DEFAULT_SERVER = "https://tripwire.so/api/v1"
+
+# An expiry at or beyond this is not a token, it is a corrupt cache: past the
+# year 9999 the date cannot even be rendered. Treating it as expired means the
+# user logs in again, instead of us trusting a garbage value as never-expiring.
+MAX_EXPIRY_SECONDS = 253_402_300_800  # 9999-12-31T00:00:00Z
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,15 +45,17 @@ class Credentials:
         """Whether the cached token has passed its expiry. ``expires_at`` is epoch
         seconds (the backend sets it alongside the JWT ``exp`` claim).
 
-        A missing or non-numeric expiry counts as expired: a cache we cannot reason
-        about means "log in again", never a crash. The Node CLI shares this cache
-        file and treats it the same way.
+        Anything we cannot reason about (missing, non-numeric, NaN, infinity, or an
+        unrenderable far-future value) counts as expired: a cache we do not
+        understand means "log in again", never a crash and never blind trust. The
+        Node CLI shares this file and applies the same rule.
         """
-        if not isinstance(self.expires_at, (int, float)) or isinstance(
-            self.expires_at, bool
-        ):
+        value = self.expires_at
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return True
-        return self.expires_at <= (time.time() if now is None else now)
+        if not math.isfinite(value) or value >= MAX_EXPIRY_SECONDS:
+            return True
+        return value <= (time.time() if now is None else now)
 
 
 class NoCredentialsError(Exception):
@@ -69,6 +77,11 @@ class CredentialStore:
         if not self.path.exists():
             raise NoCredentialsError("not logged in (run `tripwire auth login`)")
         data = json.loads(self.path.read_text())
+        if not isinstance(data, dict):
+            # A cache holding `null`, a list, or a bare scalar is corrupt, not a
+            # session. Without this, `.items()` below raises AttributeError and
+            # escapes as a raw traceback.
+            raise ValueError("credential cache is not a JSON object")
         # Forward-compatible: keep only the fields this CLI knows about, so an
         # older CLI reading a cache written by a newer one does not crash on an
         # unexpected keyword argument. Also drops the legacy ``role`` field.
@@ -77,11 +90,14 @@ class CredentialStore:
 
     def try_load(self) -> Credentials | None:
         """The cached credentials, or None when there is no usable cache. Missing,
-        unreadable, and corrupt files all mean the same thing: log in again. A
-        TypeError is the "valid JSON, missing a required field" shape of corrupt."""
+        unreadable, and corrupt files all mean the same thing: log in again.
+
+        TypeError is the "valid JSON, missing a required field" shape of corrupt;
+        AttributeError is the "valid JSON, but not an object" shape. Neither should
+        ever reach the user as a traceback."""
         try:
             return self.load()
-        except (NoCredentialsError, ValueError, TypeError, OSError):
+        except (NoCredentialsError, ValueError, TypeError, AttributeError, OSError):
             return None
 
     def save(self, credentials: Credentials) -> Path:

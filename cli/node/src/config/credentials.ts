@@ -36,9 +36,25 @@ export class NoCredentialsError extends Error {
   }
 }
 
-/** Whether a cached token has passed its expiry. `expires_at` is epoch seconds. */
+/**
+ * An expiry at or beyond this is not a token, it is a corrupt cache: past the
+ * year 9999 the date cannot even be rendered. Treating it as expired means the
+ * user logs in again, instead of us trusting a garbage value as never-expiring.
+ */
+const MAX_EXPIRY_SECONDS = 253_402_300_800; // 9999-12-31T00:00:00Z
+
+/**
+ * Whether a cached token has passed its expiry. `expires_at` is epoch seconds.
+ * Anything we cannot reason about (missing, non-numeric, NaN, Infinity, or an
+ * unrenderable far-future value) counts as expired: a cache we do not
+ * understand means "log in again", never a crash and never blind trust. The
+ * Python CLI shares this file and applies the same rule.
+ */
 export function isExpired(creds: Credentials, nowMs: number = Date.now()): boolean {
-  return !Number.isFinite(creds.expires_at) || creds.expires_at * 1000 <= nowMs;
+  const expiresAt = creds.expires_at;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return true;
+  if (expiresAt >= MAX_EXPIRY_SECONDS) return true;
+  return expiresAt * 1000 <= nowMs;
 }
 
 /** The effective API base URL: the stored server, or the public default. */
@@ -65,13 +81,29 @@ export class CredentialStore {
     if (!existsSync(this.path)) {
       throw new NoCredentialsError();
     }
-    const data = JSON.parse(readFileSync(this.path, "utf8")) as Record<string, unknown>;
+    const data = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
+    if (typeof data !== "object" || data === null || Array.isArray(data)) {
+      throw new NoCredentialsError();
+    }
     // Forward-compatible: keep only the fields this CLI knows about, so an older
     // CLI reading a cache written by a newer one does not choke on an unexpected
     // key. Also drops the legacy `role` field.
+    const source = data as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const key of KNOWN_FIELDS) {
-      if (key in data) out[key] = data[key];
+      if (key in source) out[key] = source[key];
+    }
+    // A cache without a usable identity and token is not a session. This mirrors
+    // the validation the login path already does before writing, and matches the
+    // Python CLI, which rejects the same file (its dataclass requires both). Two
+    // clients sharing one cache file must agree on what "logged in" means.
+    if (
+      typeof out["user_id"] !== "string" ||
+      out["user_id"] === "" ||
+      typeof out["access_token"] !== "string" ||
+      out["access_token"] === ""
+    ) {
+      throw new NoCredentialsError();
     }
     return out as unknown as Credentials;
   }

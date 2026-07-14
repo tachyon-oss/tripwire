@@ -3,6 +3,7 @@
  * the identity line, counts, then FIRED canaries first, then the rest.
  * `--watch` re-polls; `--json` emits verbatim server truth.
  */
+import { CliError } from "../util/errors.js";
 import { canaryRow, type CanarySummary, hasFired, identityLine } from "../util/format.js";
 import { err, out, printJson } from "../util/io.js";
 import type { Session } from "../util/session.js";
@@ -35,6 +36,10 @@ export async function runStatus(session: Session, opts: StatusOptions): Promise<
     try {
       await renderOnce(session, false);
     } catch (error) {
+      // A cancelled sign-in, or a refusal to sign in at all, is the user's
+      // decision -- not a blip to ride out. Retrying it would re-prompt every
+      // five seconds and swallow the Ctrl+C they just pressed to escape.
+      if (error instanceof CliError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       err(`(temporary error: ${message}; retrying in 5s…)`);
     }
