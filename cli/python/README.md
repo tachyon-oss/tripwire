@@ -18,10 +18,14 @@ uvx --from . tripwire --help
 ## Usage
 
 ```bash
-# Log in and cache a token. Passwordless email-code login: it prompts for your
-# email (defaulting to the address from your last login) and the 6-digit code
-# emailed to you.
-tripwire login
+# You do not need to log in first. Any command that needs an account signs you
+# in on the spot: it prompts for your email (defaulting to the address from your
+# last login) and the 6-digit code emailed to you. This needs a terminal; in CI
+# or an agent it fails fast telling you to run `tripwire auth login` instead of
+# hanging on a prompt you cannot see.
+tripwire auth login     # optional, to do it up front
+tripwire auth status    # who am I, and when does the session expire?
+tripwire auth logout
 
 # See identity, counts, and any canaries that have fired (fired first).
 tripwire status

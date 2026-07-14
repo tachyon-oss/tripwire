@@ -156,6 +156,11 @@ def _context(tmp_path, client) -> Context:
     return Context(store=store, client_factory=lambda server, token=None: client)
 
 
+# A cached session must be UNEXPIRED, or an authenticated command would try to
+# sign the user in again instead of using it.
+VALID_UNTIL = 4_102_444_800  # 2100-01-01Z, epoch seconds
+
+
 def _logged_in_context(tmp_path, client, *, email=None) -> Context:
     ctx = _context(tmp_path, client)
     ctx.store.save(
@@ -163,7 +168,7 @@ def _logged_in_context(tmp_path, client, *, email=None) -> Context:
             server="https://api.example",
             user_id="usr_alice",
             access_token="tok",
-            expires_at=1700000000,
+            expires_at=VALID_UNTIL,
             email=email,
         )
     )
@@ -282,14 +287,14 @@ def test_identity_line_hides_default_server_shows_email():
 
 
 def test_login_has_no_server_flag():
-    rejected = CliRunner().invoke(cli, ["login", "--server", "https://x"])
+    rejected = CliRunner().invoke(cli, ["auth", "login", "--server", "https://x"])
     assert rejected.exit_code != 0
     assert "no such option" in rejected.output.lower()
 
 
 @pytest.mark.parametrize("flag", ["--user-id", "--password", "--code"])
 def test_login_rejects_removed_flags(flag):
-    result = CliRunner().invoke(cli, ["login", flag, "x"])
+    result = CliRunner().invoke(cli, ["auth", "login", flag, "x"])
     assert result.exit_code != 0
     assert "no such option" in result.output.lower()
 
@@ -305,7 +310,7 @@ def test_login_emails_a_code_and_caches_it(tmp_path, monkeypatch):
         }
     )
     ctx = _context(tmp_path, client)
-    result = CliRunner().invoke(cli, ["login"], input="alice@example.com\n123456\n", obj=ctx)
+    result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     assert client.login_starts == ["alice@example.com"]
     assert client.code_logins == [("alice@example.com", "123456")]
@@ -327,7 +332,7 @@ def test_login_against_default_server_omits_server_and_role(tmp_path, monkeypatc
         }
     )
     ctx = _context(tmp_path, client)
-    result = CliRunner().invoke(cli, ["login"], input="alice@example.com\n123456\n", obj=ctx)
+    result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     on_disk = json.loads((tmp_path / "credentials.json").read_text())
     assert "server" not in on_disk
@@ -344,7 +349,7 @@ def test_login_email_default_comes_from_cached_login(tmp_path, monkeypatch):
         result={"user_id": "usr_alice", "access_token": "tok", "expires_at": 1700000000}
     )
     ctx = _logged_in_context(tmp_path, client, email="prior@example.com")
-    result = CliRunner().invoke(cli, ["login"], input="\n123456\n", obj=ctx)
+    result = CliRunner().invoke(cli, ["auth", "login"], input="\n123456\n", obj=ctx)
     assert result.exit_code == 0, result.output
     assert "prior@example.com" in result.output
     assert client.login_starts == ["prior@example.com"]
@@ -358,7 +363,7 @@ def test_login_email_reprompts_on_invalid_code_without_recalling_start(tmp_path,
     )
     ctx = _context(tmp_path, client)
     result = CliRunner().invoke(
-        cli, ["login"], input="alice@example.com\n000000\n111111\n123456\n", obj=ctx
+        cli, ["auth", "login"], input="alice@example.com\n000000\n111111\n123456\n", obj=ctx
     )
     assert result.exit_code == 0, result.output
     assert client.login_starts == ["alice@example.com"]
@@ -377,7 +382,7 @@ def test_login_email_gives_up_after_too_many_bad_codes(tmp_path, monkeypatch):
     )
     ctx = _context(tmp_path, client)
     result = CliRunner().invoke(
-        cli, ["login"], input="alice@example.com\n000000\n111111\n222222\n", obj=ctx
+        cli, ["auth", "login"], input="alice@example.com\n000000\n111111\n222222\n", obj=ctx
     )
     assert result.exit_code != 0
     assert client.login_starts == ["alice@example.com"]
@@ -392,7 +397,7 @@ def test_login_email_flag_skips_email_prompt_only(tmp_path, monkeypatch):
     )
     ctx = _context(tmp_path, client)
     result = CliRunner().invoke(
-        cli, ["login", "--email", "ci@example.com"], input="123456\n", obj=ctx
+        cli, ["auth", "login", "--email", "ci@example.com"], input="123456\n", obj=ctx
     )
     assert result.exit_code == 0, result.output
     assert client.login_starts == ["ci@example.com"]
@@ -408,7 +413,7 @@ def test_login_start_rate_limit_gives_friendly_message(tmp_path, monkeypatch):
             raise ApiError(429, "rate_limited")
 
     ctx = _context(tmp_path, _StartErr())
-    result = CliRunner().invoke(cli, ["login"], input="alice@example.com\n", obj=ctx)
+    result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n", obj=ctx)
     assert result.exit_code != 0
     assert "too many login attempts from this network" in result.output
     assert "429: rate_limited" not in result.output
@@ -425,7 +430,7 @@ def test_login_code_exchange_5xx_tells_user_code_may_be_spent(tmp_path, monkeypa
             raise ApiError(status, "internal_error")
 
     ctx = _context(tmp_path, _CodeErr())
-    result = CliRunner().invoke(cli, ["login"], input="alice@example.com\n123456\n", obj=ctx)
+    result = CliRunner().invoke(cli, ["auth", "login"], input="alice@example.com\n123456\n", obj=ctx)
     assert result.exit_code != 0
     assert "may already be spent" in result.output
     assert not (tmp_path / "credentials.json").exists()
@@ -434,9 +439,9 @@ def test_login_code_exchange_5xx_tells_user_code_may_be_spent(tmp_path, monkeypa
 def test_logout_reports_state(tmp_path):
     client = _FakeClient()
     ctx = _logged_in_context(tmp_path, client)
-    first = CliRunner().invoke(cli, ["logout"], obj=ctx)
+    first = CliRunner().invoke(cli, ["auth", "logout"], obj=ctx)
     assert "cached token removed" in first.output
-    second = CliRunner().invoke(cli, ["logout"], obj=_context(tmp_path, client))
+    second = CliRunner().invoke(cli, ["auth", "logout"], obj=_context(tmp_path, client))
     assert "no cached token" in second.output
 
 
@@ -788,12 +793,12 @@ def test_commands_need_login(tmp_path, argv):
     ["Invalid header padding", "Invalid token", "token expired", "Failed to decrypt token"],
 )
 def test_unauthorized_message_maps_token_errors_to_session_expired(raw_detail):
-    assert _unauthorized_message(raw_detail) == "session expired; run `tripwire login`"
+    assert _unauthorized_message(raw_detail) == "session expired; run `tripwire auth login`"
 
 
 def test_unauthorized_message_keeps_meaningful_detail():
     assert _unauthorized_message("forbidden_scope") == (
-        "401: forbidden_scope\nhint: run `tripwire login`"
+        "401: forbidden_scope\nhint: run `tripwire auth login`"
     )
 
 
@@ -803,7 +808,7 @@ def test_list_maps_opaque_401_to_session_expired(tmp_path):
         cli, ["canary", "list"], obj=_logged_in_context(tmp_path, client)
     )
     assert result.exit_code != 0
-    assert "session expired; run `tripwire login`" in result.output
+    assert "session expired; run `tripwire auth login`" in result.output
     assert "Invalid header padding" not in result.output
 
 
@@ -990,7 +995,9 @@ def test_bundle_download_challenge_failed_points_to_web(tmp_path):
 def test_readme_lists_the_trimmed_surface():
     readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
     for command in [
-        "tripwire login",
+        "tripwire auth login",
+        "tripwire auth logout",
+        "tripwire auth status",
         "tripwire status",
         "tripwire canary create",
         "tripwire canary list",
