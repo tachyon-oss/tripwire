@@ -24,6 +24,31 @@ def test_is_expired_true_for_past_token():
     assert _creds(PAST).is_expired(now=NOW) is True
 
 
+def test_is_expired_true_for_a_null_expiry(tmp_path):
+    # A cache with a null/garbage expiry must mean "log in again", never a crash.
+    # The Node CLI shares this file and treats it the same way; a TypeError here
+    # used to escape as a raw traceback.
+    path = tmp_path / "credentials.json"
+    path.write_text('{"user_id":"usr_1","access_token":"tok","expires_at":null}')
+    cached = credentials.CredentialStore(path).try_load()
+    assert cached is not None
+    assert cached.is_expired() is True
+
+
+def test_null_expiry_fails_cleanly_without_a_tty(tmp_path):
+    store = credentials.CredentialStore(tmp_path / "credentials.json")
+    store.path.write_text('{"user_id":"usr_1","access_token":"tok","expires_at":null}')
+    obj = Context(
+        store=store,
+        client_factory=lambda server, token=None: FakeClient([]),
+        prompter=FakePrompter([], tty=False),
+    )
+    result = CliRunner().invoke(cli, ["canary", "list", "--json"], obj=obj)
+    assert result.exit_code != 0
+    assert "tripwire auth login" in result.output
+    assert not isinstance(result.exception, TypeError)
+
+
 def test_try_load_returns_none_without_a_cache(tmp_path):
     store = credentials.CredentialStore(tmp_path / "credentials.json")
     assert store.try_load() is None

@@ -38,6 +38,15 @@ describe("isExpired", () => {
       isExpired({ user_id: "usr_1", access_token: "tok", expires_at: PAST }, NOW_MS),
     ).toBe(true);
   });
+
+  it("is true for a null/garbage expiry", () => {
+    // A cache we cannot reason about means "log in again", never a crash. The
+    // Python CLI shares this cache file and must agree; it used to raise here.
+    const garbage = { user_id: "usr_1", access_token: "tok" } as unknown as Parameters<
+      typeof isExpired
+    >[0];
+    expect(isExpired(garbage, NOW_MS)).toBe(true);
+  });
 });
 
 describe("CredentialStore.tryLoad", () => {

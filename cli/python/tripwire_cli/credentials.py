@@ -37,7 +37,16 @@ class Credentials:
 
     def is_expired(self, now: float | None = None) -> bool:
         """Whether the cached token has passed its expiry. ``expires_at`` is epoch
-        seconds (the backend sets it alongside the JWT ``exp`` claim)."""
+        seconds (the backend sets it alongside the JWT ``exp`` claim).
+
+        A missing or non-numeric expiry counts as expired: a cache we cannot reason
+        about means "log in again", never a crash. The Node CLI shares this cache
+        file and treats it the same way.
+        """
+        if not isinstance(self.expires_at, (int, float)) or isinstance(
+            self.expires_at, bool
+        ):
+            return True
         return self.expires_at <= (time.time() if now is None else now)
 
 
