@@ -2,7 +2,8 @@
  * `tripwire` — command-line client for Tripwire security canaries.
  *
  * Noun-first grammar:
- *   tripwire login | logout | status
+ *   tripwire auth login | auth logout | auth status
+ *   tripwire status
  *   tripwire canary create|list|show|delete
  *   tripwire bundle download
  * Single canonical names only — no command aliases and no back-compat surface.
@@ -14,14 +15,14 @@ import { readFileSync } from "node:fs";
 
 import { Command } from "commander";
 
-import { runLogin, runLogout } from "./commands/auth.js";
+import { runAuthStatus, runLogin, runLogout } from "./commands/auth.js";
 import { runBundleDownload } from "./commands/bundle.js";
 import { runDelete, runList, runShow } from "./commands/canary.js";
 import { runCreate } from "./commands/create.js";
 import { runStatus } from "./commands/status.js";
 import { PLACEMENTS } from "./placements/index.js";
 import { customerTypes } from "./types/registry.js";
-import { action } from "./util/errors.js";
+import { action, CliError } from "./util/errors.js";
 import { Session } from "./util/session.js";
 
 export { Session };
@@ -49,17 +50,41 @@ export function buildProgram(session: Session): Command {
     .version(readVersion(), "-v, --version")
     .showHelpAfterError();
 
-  // ----- auth / session -----
-  program
+  // ----- auth group -----
+  const auth = program
+    .command("auth")
+    .description("log in, log out, and check your session");
+
+  auth
     .command("login")
     .description("log in with an emailed sign-in code and cache a token")
     .option("--email <addr>", "email address to sign in with")
     .action(action(async (opts: { email?: string }) => runLogin(session, opts)));
 
-  program
+  auth
     .command("logout")
     .description("forget the cached token")
     .action(action(() => runLogout(session)));
+
+  auth
+    .command("status")
+    .description("show who you are logged in as, and when the session expires")
+    .action(action(() => runAuthStatus(session)));
+
+  // The pre-0.2 spellings. Registered (hidden) only so they fail with a
+  // migration hint instead of commander's bare "unknown command". Not aliases:
+  // they do not log anyone in.
+  for (const moved of ["login", "logout"] as const) {
+    program
+      .command(moved, { hidden: true })
+      .allowUnknownOption()
+      .argument("[args...]")
+      .action(
+        action(() => {
+          throw new CliError(`\`tripwire ${moved}\` moved to \`tripwire auth ${moved}\``);
+        }),
+      );
+  }
 
   program
     .command("status")

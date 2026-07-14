@@ -101,7 +101,8 @@ async function createOrExplain(
   waitSeconds: number,
 ): Promise<Record<string, unknown>> {
   try {
-    return await session.authedClient().createCanary(payload, waitSeconds * 1000);
+    const client = await session.authedClient();
+    return await client.createCanary(payload, waitSeconds * 1000);
   } catch (error) {
     if (error instanceof ApiError) {
       const message = createErrorMessage(error);

@@ -21,7 +21,7 @@ import {
   filenameFromDisposition,
   runBundleDownload,
 } from "../src/commands/bundle.js";
-import { CredentialStore, NoCredentialsError } from "../src/config/credentials.js";
+import { CredentialStore } from "../src/config/credentials.js";
 import { buildProgram, Session } from "../src/index.js";
 
 let dir: string;
@@ -125,6 +125,11 @@ function makeSession(fetchImpl: typeof fetch, opts: { loggedIn?: boolean } = {})
     store,
     clientFactory: (baseUrl, token) =>
       new ApiClient({ baseUrl, token: token ?? null, fetchImpl }),
+    prompter: {
+      interactive: () => false,
+      ask: async () => "",
+      notify: () => {},
+    },
   });
 }
 
@@ -410,10 +415,10 @@ describe("bundle error mapping", () => {
 });
 
 describe("bundle download requires login", () => {
-  it("throws NoCredentialsError before making any request", async () => {
+  it("fails with the auth-login hint before making any request", async () => {
     const fetchSpy = vi.fn();
     const session = makeSession(fetchSpy as unknown as typeof fetch, { loggedIn: false });
-    await expect(runBundleDownload(session, "b1", {})).rejects.toBeInstanceOf(NoCredentialsError);
+    await expect(runBundleDownload(session, "b1", {})).rejects.toThrow(/tripwire auth login/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

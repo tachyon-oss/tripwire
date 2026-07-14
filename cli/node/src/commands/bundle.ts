@@ -4,10 +4,9 @@
  *
  * The bundle endpoints are PUBLIC on the server (no auth), but the CLI still
  * requires login for uniformity: `download` resolves `session.authedClient()`
- * first, which throws `NoCredentialsError` (the standard "run `tripwire login`"
- * message + nonzero exit) BEFORE any request is made. The cached token is
- * attached to the requests too — the endpoints ignore it, so behavior matches
- * the rest of the CLI.
+ * first, which signs the user in (or fails fast without a TTY) BEFORE any
+ * request is made. The cached token is attached to the requests too — the
+ * endpoints ignore it, so behavior matches the rest of the CLI.
  */
 import {
   existsSync,
@@ -192,7 +191,8 @@ export async function runBundleDownload(
   id: string | undefined,
   opts: BundleDownloadOptions,
 ): Promise<void> {
-  const client = session.authedClient(); // login guard: throws before any request.
+  // Login guard: resolves (or performs) auth before any bundle request is made.
+  const client = await session.authedClient();
   await withBundleErrors(async () => {
     // No id given: issue a fresh bundle for the logged-in user first, then
     // download it. The create body is empty — the auth-derived recipient and the

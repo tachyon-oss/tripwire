@@ -30,10 +30,15 @@ export interface Credentials {
 }
 
 export class NoCredentialsError extends Error {
-  constructor(message = "not logged in (run `tripwire login`)") {
+  constructor(message = "not logged in (run `tripwire auth login`)") {
     super(message);
     this.name = "NoCredentialsError";
   }
+}
+
+/** Whether a cached token has passed its expiry. `expires_at` is epoch seconds. */
+export function isExpired(creds: Credentials, nowMs: number = Date.now()): boolean {
+  return !Number.isFinite(creds.expires_at) || creds.expires_at * 1000 <= nowMs;
 }
 
 /** The effective API base URL: the stored server, or the public default. */
@@ -69,6 +74,18 @@ export class CredentialStore {
       if (key in data) out[key] = data[key];
     }
     return out as unknown as Credentials;
+  }
+
+  /**
+   * The cached credentials, or `null` when there is no usable cache. A missing,
+   * unreadable, or corrupt file all mean the same thing to a caller: log in again.
+   */
+  tryLoad(): Credentials | null {
+    try {
+      return this.load();
+    } catch {
+      return null;
+    }
   }
 
   save(creds: Credentials): string {

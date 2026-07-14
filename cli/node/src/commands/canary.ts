@@ -18,7 +18,7 @@ export interface ListOptions {
 }
 
 export async function runList(session: Session, opts: ListOptions): Promise<void> {
-  const response = (await session.authedClient().listCanaries()) as ListResponse;
+  const response = (await (await session.authedClient()).listCanaries()) as ListResponse;
   let canaries = response.canaries ?? [];
 
   if (opts.type) {
@@ -50,7 +50,7 @@ export async function runShow(
   id: string,
   opts: ShowOptions,
 ): Promise<void> {
-  const canary = (await session.authedClient().getCanary(id)) as CanarySummary;
+  const canary = (await (await session.authedClient()).getCanary(id)) as CanarySummary;
   if (opts.json) {
     printJson(canary);
     return;
@@ -65,5 +65,5 @@ export async function runShow(
 }
 
 export async function runDelete(session: Session, id: string): Promise<void> {
-  printJson(await session.authedClient().deleteCanary(id));
+  printJson(await (await session.authedClient()).deleteCanary(id));
 }

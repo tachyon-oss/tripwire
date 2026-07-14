@@ -32,9 +32,9 @@ const EXPIRED_SESSION_MARKERS = [
 export function unauthorizedMessage(detail: string): string {
   const lowered = detail.toLowerCase();
   if (EXPIRED_SESSION_MARKERS.some((m) => lowered.includes(m))) {
-    return "session expired; run `tripwire login`";
+    return "session expired; run `tripwire auth login`";
   }
-  return `401: ${detail}\nhint: run \`tripwire login\``;
+  return `401: ${detail}\nhint: run \`tripwire auth login\``;
 }
 
 /** Translate a known error into user-facing text, or `null` to re-throw. */

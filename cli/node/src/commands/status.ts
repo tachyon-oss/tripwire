@@ -26,10 +26,10 @@ export async function runStatus(session: Session, opts: StatusOptions): Promise<
     await renderOnce(session, opts.json ?? false);
     return;
   }
-  // Check auth once up front (fail fast if not logged in), then poll every 5s,
+  // Resolve auth once up front (signing in if needed), then poll every 5s,
   // clearing the screen between frames, until interrupted. A transient error
   // between frames is tolerated: warn and keep polling rather than exiting.
-  session.load();
+  await session.requireCredentials();
   for (;;) {
     process.stdout.write("\x1b[2J\x1b[H");
     try {
@@ -43,8 +43,8 @@ export async function runStatus(session: Session, opts: StatusOptions): Promise<
 }
 
 async function renderOnce(session: Session, json: boolean): Promise<void> {
-  const creds = session.load();
-  const response = (await session.authedClient().listCanaries()) as ListResponse;
+  const creds = await session.requireCredentials();
+  const response = (await (await session.authedClient()).listCanaries()) as ListResponse;
   if (json) {
     printJson(response);
     return;
