@@ -77,6 +77,24 @@ describe("TtyPrompter.interactive", () => {
   });
 });
 
+describe("explicit `auth login` without a terminal", () => {
+  // A sign-in that cannot happen must fail LOUDLY. The dangerous outcome is a
+  // silent one: readline on a non-TTY stdin never settles, so `tripwire auth
+  // login < /dev/null` printed "email:" and exited 0, reporting a login that
+  // never happened as success to any script, CI job, or agent wrapping the CLI.
+  // Auto-login is guarded by `interactive()`; the explicit command was not.
+  it("fails with a nonzero exit instead of exiting 0 silently", async () => {
+    const calls: string[] = [];
+    const prompter = new FakePrompter([], false); // no TTY
+    const { session } = makeSession(prompter, calls);
+
+    await expect(session.login()).rejects.toThrow(CliError);
+    await expect(session.login()).rejects.toThrow(/needs a terminal/);
+    expect(calls).toEqual([]); // never even hits /auth/login/start
+    expect(prompter.asked).toEqual([]);
+  });
+});
+
 describe("credential cache validation", () => {
   it.each([
     ["a missing access_token", '{"user_id":"usr_1","expires_at":9999999999}'],

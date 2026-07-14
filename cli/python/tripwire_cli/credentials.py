@@ -86,7 +86,20 @@ class CredentialStore:
         # older CLI reading a cache written by a newer one does not crash on an
         # unexpected keyword argument. Also drops the legacy ``role`` field.
         known = {f.name for f in dataclasses.fields(Credentials)}
-        return Credentials(**{k: v for k, v in data.items() if k in known})
+        creds = Credentials(**{k: v for k, v in data.items() if k in known})
+        # The dataclass only enforces that these keys are PRESENT. A cache whose
+        # identity or token is null, empty, or not a string is not a session:
+        # without this we would send `Authorization: Bearer None`. The Node CLI
+        # shares this file and rejects the same inputs; two clients reading one
+        # cache must agree on what "logged in" means.
+        if (
+            not isinstance(creds.user_id, str)
+            or not creds.user_id
+            or not isinstance(creds.access_token, str)
+            or not creds.access_token
+        ):
+            raise ValueError("credential cache has no usable identity or token")
+        return creds
 
     def try_load(self) -> Credentials | None:
         """The cached credentials, or None when there is no usable cache. Missing,

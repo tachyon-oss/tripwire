@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from tripwire_cli import credentials
+from tripwire_cli.prompt import TtyPrompter
 from tripwire_cli.cli import (
     CREATABLE_TYPES,
     DEFAULT_SERVER,
@@ -151,9 +152,24 @@ class _BundleClient:
         return ({"content-disposition": self._disposition}, self._zip_bytes)
 
 
+class _TtyStream:
+    """Stands in for a terminal. `CliRunner` feeds input through a pipe, so
+    `sys.stdin.isatty()` is False under test and the CLI would (correctly) refuse
+    to prompt. The login tests exercise the interactive flow, so they need a
+    prompter that reports a terminal; `click.prompt` still reads the runner's
+    simulated stdin for the answers."""
+
+    def isatty(self) -> bool:
+        return True
+
+
 def _context(tmp_path, client) -> Context:
     store = credentials.CredentialStore(tmp_path / "credentials.json")
-    return Context(store=store, client_factory=lambda server, token=None: client)
+    return Context(
+        store=store,
+        client_factory=lambda server, token=None: client,
+        prompter=TtyPrompter(stdin=_TtyStream()),
+    )
 
 
 # A cached session must be UNEXPIRED, or an authenticated command would try to

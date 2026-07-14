@@ -70,8 +70,22 @@ export class Session {
     return this.login();
   }
 
-  /** Run the interactive email-code login and cache the result. */
+  /**
+   * Run the interactive email-code login and cache the result.
+   *
+   * There is no non-interactive login: the emailed code must be typed in. So a
+   * login without a TTY can only ever fail, and it must fail LOUDLY -- readline
+   * on a non-TTY stdin simply never settles, which exited 0 and reported a
+   * sign-in that never happened as success to any script wrapping the CLI.
+   */
   async login(emailFlag?: string): Promise<Credentials> {
+    if (!this.prompter.interactive()) {
+      throw new CliError(
+        "signing in needs a terminal: there is no TTY here to prompt for the " +
+          "emailed sign-in code.\n" +
+          "run `tripwire auth login` in a terminal, then re-run this.",
+      );
+    }
     const server = this.loginServer();
     const creds = await emailLogin(this.client(server), server, this.prompter, {
       emailFlag,

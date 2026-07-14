@@ -74,10 +74,33 @@ def test_try_load_returns_none_for_non_object_json(tmp_path, contents):
     assert credentials.CredentialStore(path).try_load() is None
 
 
-def test_try_load_returns_none_when_the_token_is_missing(tmp_path):
-    # Both CLIs share this file and must agree on what "logged in" means.
+@pytest.mark.parametrize(
+    "cache",
+    [
+        '{"user_id":"usr_1","expires_at":9999999999}',
+        '{"user_id":"usr_1","access_token":null,"expires_at":9999999999}',
+        '{"user_id":"usr_1","access_token":"","expires_at":9999999999}',
+        '{"user_id":"usr_1","access_token":12345,"expires_at":9999999999}',
+        '{"access_token":"tok","expires_at":9999999999}',
+        '{"user_id":null,"access_token":"tok","expires_at":9999999999}',
+        '{"user_id":"","access_token":"tok","expires_at":9999999999}',
+    ],
+    ids=[
+        "missing-token",
+        "null-token",
+        "empty-token",
+        "non-string-token",
+        "missing-user",
+        "null-user",
+        "empty-user",
+    ],
+)
+def test_try_load_returns_none_without_a_usable_identity_and_token(tmp_path, cache):
+    # Both CLIs share this file and must agree on what "logged in" means. The
+    # dataclass only enforces that the keys are PRESENT, so a null or empty token
+    # used to sail through and we would send `Authorization: Bearer None`.
     path = tmp_path / "credentials.json"
-    path.write_text('{"user_id":"usr_1","expires_at":9999999999}')
+    path.write_text(cache)
     assert credentials.CredentialStore(path).try_load() is None
 
 

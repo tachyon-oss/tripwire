@@ -283,7 +283,18 @@ class Context:
         return self.log_in()
 
     def log_in(self, email: str | None = None) -> credentials.Credentials:
-        """Run the interactive email-code login and cache the result."""
+        """Run the interactive email-code login and cache the result.
+
+        There is no non-interactive login: the emailed code must be typed in. So a
+        login without a TTY can only ever fail, and it should say why rather than
+        dying at the prompt with a bare "Aborted!".
+        """
+        if not self.prompter.interactive():
+            raise click.ClickException(
+                "signing in needs a terminal: there is no TTY here to prompt for "
+                "the emailed sign-in code.\n"
+                "run `tripwire auth login` in a terminal, then re-run this."
+            )
         server = resolve_login_server(dict(os.environ), self.cached_server())
         creds = _email_login(
             self.client(server),

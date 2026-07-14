@@ -31,8 +31,12 @@ export class TtyPrompter implements Prompter {
 
   async ask(question: string, def?: string | null): Promise<string> {
     const rl = createInterface({ input: this.input, output: process.stderr });
-    // Ctrl+C closes the interface, which rejects the pending question below.
-    rl.on("SIGINT", () => rl.close());
+    // Deliberately NO "SIGINT" listener. Registering one suppresses readline's
+    // default abort, and `rl.close()` does not settle the pending question, so
+    // the await below would hang forever and the process would exit 0 -- a
+    // cancelled sign-in reported to scripts and agents as SUCCESS. Left alone,
+    // readline rejects the question on both Ctrl+C and Ctrl+D, and the catch
+    // below turns that into a clean "sign-in cancelled." with a nonzero exit.
     try {
       const suffix = def ? ` [${def}]` : "";
       const answer = (await rl.question(`${question}${suffix}: `)).trim();
