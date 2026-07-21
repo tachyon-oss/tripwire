@@ -126,8 +126,8 @@ export const REGISTRY: TypeEntry[] = [
 export class UnknownTypeError extends CliError {
   constructor(input: string) {
     super(
-      `unknown canary type "${input}". run \`tripwire canary types\` to see the ` +
-        `available types.`,
+      `unknown canary type "${input}". run \`tripwire canary create --help\` to see ` +
+        `the available types.`,
     );
     this.name = "UnknownTypeError";
   }
